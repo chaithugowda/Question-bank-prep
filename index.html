@@ -4,56 +4,43 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>The Bank — interview question bank</title>
-<meta name="description" content="An interview question bank that refuses duplicates, maps your blind spots by angle, and drills you out loud on a spacing schedule." />
+<meta name="description" content="An interview question bank that refuses duplicates by meaning, maps blind spots by angle, and grades your spoken answers. Runs entirely in your browser." />
 <meta name="theme-color" content="#E7EAF0" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23141A26'/><text y='71' x='50' text-anchor='middle' font-size='62' font-family='sans-serif' font-weight='bold' fill='%232D3BD4'>B</text></svg>" />
 <style>
   html,body{margin:0;padding:0;background:#E7EAF0;}
   #root{min-height:100vh;}
-  #boot{font:14px/1.5 system-ui,sans-serif;color:#5C6478;padding:40px 20px;text-align:center;}
+  #boot{font:14px/1.6 system-ui,sans-serif;color:#5C6478;padding:44px 22px;text-align:center;}
+  #boot b{display:block;color:#141A26;font-size:22px;letter-spacing:-.03em;margin-bottom:8px;}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
 </head>
 <body>
-<div id="root"><div id="boot">Loading The Bank…</div></div>
+<div id="root"><div id="boot"><b>The Bank</b>Loading…</div></div>
 
-<script>
-/* Storage shim: inside Claude artifacts window.storage already exists.
-   Hosted anywhere else (GitHub Pages, local file), fall back to localStorage
-   so the bank survives a refresh. Same async contract either way. */
-if (!window.storage) {
-  window.storage = {
-    get: async function (k) {
-      var v = localStorage.getItem(k);
-      if (v === null) throw new Error("key not found: " + k);
-      return { key: k, value: v, shared: false };
-    },
-    set: async function (k, v) { localStorage.setItem(k, v); return { key: k, value: v, shared: false }; },
-    delete: async function (k) { localStorage.removeItem(k); return { key: k, deleted: true, shared: false }; },
-    list: async function (p) {
-      p = p || "";
-      var keys = [];
-      for (var i = 0; i < localStorage.length; i++) {
-        var key = localStorage.key(i);
-        if (key.indexOf(p) === 0) keys.push(key);
-      }
-      return { keys: keys, prefix: p, shared: false };
-    }
-  };
-}
+<script type="module">
+/* Transformers.js is an ES module, so it loads here and hands the pipeline
+   back to the classic script below. Lazy on purpose: nothing downloads until
+   the user turns semantic matching on. */
+window.__loadTransformers = async function (onProgress) {
+  const mod = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+  mod.env.allowLocalModels = false;
+  mod.env.useBrowserCache = true;
+  return await mod.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+    quantized: true,
+    progress_callback: onProgress,
+  });
+};
 </script>
 
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
-/* ============================================================
-   THE BANK — an interview question bank that refuses duplicates
-   ------------------------------------------------------------
-   Signature: the Collision Gauge. Every keystroke is measured
-   against the whole bank and reported as a live match score.
-   Learning model: 6 angles x spaced repetition, answered aloud.
-   ============================================================ */
+/* ==========================================================================
+   THE BANK v2 — semantic dedup, auto-tagging, spoken grading, FSRS, IndexedDB
+   ========================================================================== */
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Newsreader:opsz,wght@6..72,400;6..72,600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -61,7 +48,7 @@ const CSS = `
 .qb {
   --paper:#E7EAF0; --card:#FFFFFF; --ink:#141A26; --soft:#5C6478;
   --rule:#D2D8E4; --indigo:#2D3BD4; --clear:#0C7F5C; --warn:#A96B04;
-  --collide:#C42B41; --gold:#B48A16;
+  --collide:#C42B41; --gold:#B48A16; --violet:#6B3FA0;
   --grotesk:'Space Grotesk',Futura,'Trebuchet MS',sans-serif;
   --serif:'Newsreader',Georgia,'Iowan Old Style',serif;
   --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
@@ -71,27 +58,32 @@ const CSS = `
 .qb *{box-sizing:border-box;}
 .qb button{font-family:var(--grotesk); cursor:pointer;}
 .qb :focus-visible{outline:2px solid var(--indigo); outline-offset:2px;}
-
 .wrap{max-width:760px; margin:0 auto; padding:0 18px;}
 
-/* masthead */
-.mast{padding:26px 0 14px;}
+.mast{padding:26px 0 12px; display:flex; align-items:flex-start; justify-content:space-between; gap:14px;}
 .mast h1{font-size:26px; font-weight:700; letter-spacing:-.03em; margin:0; line-height:1;}
 .mast h1 em{font-style:normal; color:var(--indigo);}
 .mast p{font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
   color:var(--soft); margin:9px 0 0;}
 
-/* tabs */
-.tabs{display:flex; gap:4px; background:var(--card); border:1px solid var(--rule);
-  border-radius:11px; padding:4px; margin:6px 0 20px;}
-.tabs button{flex:1; border:0; background:transparent; color:var(--soft); font-size:12.5px;
-  font-weight:500; padding:9px 4px; border-radius:8px; letter-spacing:.01em;}
+.mlpill{flex-shrink:0; font-family:var(--mono); font-size:9.5px; letter-spacing:.1em;
+  text-transform:uppercase; border:1px solid var(--rule); background:var(--card);
+  border-radius:99px; padding:6px 10px; color:var(--soft); display:flex; align-items:center; gap:6px;}
+.mlpill .led{width:6px; height:6px; border-radius:99px; background:#C3C9D6;}
+.mlpill.on{border-color:var(--violet); color:var(--violet);}
+.mlpill.on .led{background:var(--violet);}
+.mlpill.load .led{background:var(--warn); animation:pulse 1.1s ease-in-out infinite;}
+@keyframes pulse{50%{opacity:.25;}}
+
+.tabs{display:flex; gap:3px; background:var(--card); border:1px solid var(--rule);
+  border-radius:11px; padding:4px; margin:6px 0 18px;}
+.tabs button{flex:1; border:0; background:transparent; color:var(--soft); font-size:12px;
+  font-weight:500; padding:9px 2px; border-radius:8px;}
 .tabs button.on{background:var(--ink); color:#fff;}
-.tabs .badge{font-family:var(--mono); font-size:10px; margin-left:5px; opacity:.75;}
+.tabs .badge{font-family:var(--mono); font-size:10px; margin-left:4px; opacity:.75;}
 
 .card{background:var(--card); border:1px solid var(--rule); border-radius:14px; padding:18px;}
 .card + .card{margin-top:14px;}
-
 .eyebrow{font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
   color:var(--soft); display:block; margin-bottom:9px;}
 
@@ -102,8 +94,10 @@ textarea.q{min-height:88px; line-height:1.45;}
 textarea.q:focus, input.t:focus{background:#fff; border-color:var(--indigo);}
 textarea.q::placeholder, input.t::placeholder{color:#9AA1B2;}
 textarea.sm{min-height:66px; font-size:15px;}
+select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:11px 12px;
+  font-size:14px; background:#FBFCFD; font-family:var(--grotesk); color:var(--ink);}
 
-/* ---- collision gauge (signature) ---- */
+/* gauge */
 .gauge{margin-top:14px;}
 .gauge-top{display:flex; align-items:flex-end; justify-content:space-between; gap:12px;}
 .gauge-num{font-size:44px; font-weight:700; letter-spacing:-.04em; line-height:.85;
@@ -119,8 +113,10 @@ textarea.sm{min-height:66px; font-size:15px;}
 .ticks i.lit{transform:scaleY(1.34);}
 .ticks-scale{display:flex; justify-content:space-between; font-family:var(--mono); font-size:9.5px;
   color:var(--soft); letter-spacing:.08em; margin-top:6px;}
+.split{display:flex; gap:14px; margin-top:9px; font-family:var(--mono); font-size:9.5px;
+  color:var(--soft); letter-spacing:.07em; text-transform:uppercase;}
+.split b{color:var(--ink); font-weight:500;}
 
-/* nearest matches */
 .near{margin-top:14px; border-top:1px dashed var(--rule); padding-top:12px;}
 .near-row{display:flex; gap:11px; align-items:baseline; padding:8px 0;}
 .near-row + .near-row{border-top:1px solid #EEF0F5;}
@@ -130,32 +126,39 @@ textarea.sm{min-height:66px; font-size:15px;}
 .near-meta{font-family:var(--mono); font-size:9.5px; color:var(--soft); text-transform:uppercase;
   letter-spacing:.1em; margin-top:3px;}
 
-/* chips */
 .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:9px;}
 .chip{border:1px solid var(--rule); background:#F4F6F9; color:var(--ink); border-radius:99px;
   padding:6px 11px; font-size:12.5px; font-weight:500;}
 .chip.on{background:var(--ink); color:#fff; border-color:var(--ink);}
 .chip.ghost{background:transparent; border-style:dashed; color:var(--soft);}
 .chip .x{opacity:.55; margin-left:6px;}
+.chip .conf{font-family:var(--mono); font-size:9.5px; opacity:.6; margin-left:6px;}
 
-/* buttons */
 .btn{border:1px solid var(--ink); background:var(--ink); color:#fff; border-radius:10px;
   padding:12px 16px; font-size:14px; font-weight:500; width:100%;}
 .btn[disabled]{opacity:.34; cursor:not-allowed;}
 .btn.line{background:transparent; color:var(--ink);}
 .btn.danger{background:var(--collide); border-color:var(--collide);}
+.btn.violet{background:var(--violet); border-color:var(--violet);}
 .btn.tiny{width:auto; padding:7px 12px; font-size:12.5px; border-radius:8px;}
-.row{display:flex; gap:8px;}
+.row{display:flex; gap:8px; flex-wrap:wrap;}
+.row .btn{flex:1;}
 
 .note{font-size:13px; line-height:1.5; color:var(--soft); margin:10px 0 0;}
 .note b{color:var(--ink);}
+.hint{font-size:12px; color:var(--soft); margin-top:6px; line-height:1.45;}
 .alert{border-radius:10px; padding:11px 13px; font-size:13.5px; line-height:1.45; margin-top:12px;}
 .alert.warn{background:#FDF6E7; border:1px solid #EBD9A8; color:#6B4A02;}
 .alert.stop{background:#FCEDEF; border:1px solid #F0C6CD; color:#8C1526;}
 .alert.ok{background:#EAF6F1; border:1px solid #BFE0D3; color:#08503B;}
+.alert.info{background:#F1F3F8; border:1px solid var(--rule); color:var(--ink);}
+.alert.ml{background:#F3EFFA; border:1px solid #DACCEF; color:#3F2168;}
 .alert b{display:block; margin-bottom:3px;}
+.field + .field{margin-top:15px;}
 
-/* bank list */
+.bar{height:5px; background:#DFE3EB; border-radius:99px; overflow:hidden; margin-top:9px;}
+.bar i{display:block; height:100%; background:var(--violet); border-radius:99px; transition:width .3s ease;}
+
 .item{border-top:1px solid var(--rule); padding:15px 0;}
 .item:first-child{border-top:0;}
 .item-q{font-family:var(--serif); font-size:17px; line-height:1.4;}
@@ -166,21 +169,33 @@ textarea.sm{min-height:66px; font-size:15px;}
   margin-top:9px; padding-left:11px; border-left:2px solid var(--rule);}
 .variant{margin-left:14px; padding-left:12px; border-left:2px solid var(--indigo);}
 
-/* review */
 .rev-q{font-family:var(--serif); font-size:23px; line-height:1.32; letter-spacing:-.01em;}
 .timer{font-family:var(--mono); font-size:34px; font-weight:500; font-variant-numeric:tabular-nums;
   letter-spacing:-.02em;}
 .timer-bar{height:4px; background:#DFE3EB; border-radius:99px; overflow:hidden; margin-top:10px;}
-.timer-bar i{display:block; height:100%; background:var(--indigo); border-radius:99px;
-  transition:width .9s linear;}
+.timer-bar i{display:block; height:100%; background:var(--indigo); border-radius:99px; transition:width .9s linear;}
 .grade{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;}
-.grade button{border:1px solid var(--rule); background:#fff; border-radius:10px; padding:12px 8px;
-  text-align:left;}
+.grade button{border:1px solid var(--rule); background:#fff; border-radius:10px; padding:12px 8px; text-align:left;}
+.grade button.rec{border-color:var(--indigo); box-shadow:0 0 0 2px rgba(45,59,212,.11);}
 .grade b{display:block; font-size:13.5px;}
-.grade small{font-family:var(--mono); font-size:9.5px; color:var(--soft); letter-spacing:.07em;
-  text-transform:uppercase;}
+.grade small{font-family:var(--mono); font-size:9.5px; color:var(--soft); letter-spacing:.07em; text-transform:uppercase;}
 
-/* coverage grid */
+.mic{display:flex; align-items:center; gap:10px; margin-top:14px;}
+.mic-orb{width:44px; height:44px; border-radius:99px; border:1px solid var(--rule); background:#F4F6F9;
+  display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:18px;}
+.mic-orb.live{background:var(--collide); border-color:var(--collide); color:#fff; animation:pulse 1.4s ease-in-out infinite;}
+.transcript{font-family:var(--serif); font-size:15px; line-height:1.5; color:var(--soft);
+  margin-top:12px; padding:11px 13px; background:#FBFCFD; border:1px solid var(--rule); border-radius:10px;
+  max-height:170px; overflow:auto;}
+.transcript em{font-style:normal; color:#9AA1B2;}
+
+.beat{display:flex; gap:9px; align-items:flex-start; padding:9px 0;}
+.beat + .beat{border-top:1px solid #EEF0F5;}
+.beat-mark{font-family:var(--mono); font-size:12px; width:20px; flex-shrink:0; text-align:center; padding-top:1px;}
+.beat-txt{font-family:var(--serif); font-size:15px; line-height:1.42; flex:1;}
+.beat.miss .beat-txt{color:var(--collide);}
+.beat-score{font-family:var(--mono); font-size:9.5px; color:var(--soft); letter-spacing:.06em;}
+
 .cov{display:flex; align-items:center; gap:10px; padding:11px 0; border-top:1px solid var(--rule);}
 .cov:first-of-type{border-top:0;}
 .cov-name{flex:1; font-size:14px; font-weight:500; letter-spacing:-.01em; min-width:0;}
@@ -204,18 +219,19 @@ textarea.sm{min-height:66px; font-size:15px;}
 
 .empty{text-align:center; padding:34px 14px;}
 .empty h3{font-family:var(--serif); font-size:21px; font-weight:600; margin:0 0 7px;}
-.empty p{font-size:14px; color:var(--soft); line-height:1.5; margin:0 auto 16px; max-width:330px;}
+.empty p{font-size:14px; color:var(--soft); line-height:1.5; margin:0 auto 16px; max-width:340px;}
 
-.field + .field{margin-top:15px;}
-.hint{font-size:12px; color:var(--soft); margin-top:6px; line-height:1.45;}
-select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:11px 12px;
-  font-size:14px; background:#FBFCFD; font-family:var(--grotesk); color:var(--ink);}
+.kv{display:flex; justify-content:space-between; gap:12px; padding:9px 0; font-size:13.5px;
+  border-top:1px solid #EEF0F5;}
+.kv:first-of-type{border-top:0;}
+.kv span{color:var(--soft);}
+.kv b{font-family:var(--mono); font-size:12px; font-weight:500;}
 
-@media (prefers-reduced-motion: reduce){ .qb *{transition:none !important;} }
-@media (max-width:420px){ .cell{width:22px; height:22px;} .mast h1{font-size:23px;} }
+@media (prefers-reduced-motion: reduce){ .qb *{transition:none !important; animation:none !important;} }
+@media (max-width:420px){ .cell{width:22px; height:22px;} .mast h1{font-size:23px;} .tabs button{font-size:11px;} }
 `;
 
-/* ---------- text similarity ---------- */
+/* ---------------------------- lexical layer ---------------------------- */
 const STOP = new Set(("a an the is are was were be been being am do does did doing you your yours my mine i we our us it its of to in on at for with and or as that this these those from by can could would should will shall may might what why how when which who whom whose please tell about explain describe give any some there their they them he she").split(" "));
 
 const stem = (w) => {
@@ -227,46 +243,51 @@ const stem = (w) => {
   if (w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
   return w;
 };
-
 const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-
 const toks = (s) => {
   const set = new Set();
   norm(s).split(" ").forEach((w) => { if (w && !STOP.has(w)) set.add(stem(w)); });
   return set;
 };
-
 const trigrams = (s) => {
-  const t = " " + norm(s).replace(/\s+/g, " ") + " ";
+  const t = " " + norm(s) + " ";
   const set = new Set();
   for (let i = 0; i < t.length - 2; i++) set.add(t.slice(i, i + 3));
   return set;
 };
+const dice = (a, b) => { if (!a.size || !b.size) return 0; let h = 0; a.forEach((x) => { if (b.has(x)) h++; }); return (2 * h) / (a.size + b.size); };
+const jaccard = (a, b) => { if (!a.size || !b.size) return 0; let h = 0; a.forEach((x) => { if (b.has(x)) h++; }); return h / (a.size + b.size - h); };
 
-const dice = (a, b) => {
-  if (!a.size || !b.size) return 0;
-  let hit = 0;
-  a.forEach((x) => { if (b.has(x)) hit++; });
-  return (2 * hit) / (a.size + b.size);
-};
-
-const jaccard = (a, b) => {
-  if (!a.size || !b.size) return 0;
-  let hit = 0;
-  a.forEach((x) => { if (b.has(x)) hit++; });
-  return hit / (a.size + b.size - hit);
-};
-
-/** 0–100 match score between two question strings. */
-function similarity(a, b) {
+function lexScore(a, b) {
   const ta = toks(a), tb = toks(b);
   if (ta.size && tb.size && ta.size === tb.size) {
-    let same = true;
-    ta.forEach((x) => { if (!tb.has(x)) same = false; });
+    let same = true; ta.forEach((x) => { if (!tb.has(x)) same = false; });
     if (same) return 100;
   }
-  const s = 0.55 * dice(trigrams(a), trigrams(b)) + 0.45 * jaccard(ta, tb);
-  return Math.round(Math.min(100, s * 118));
+  return Math.round(Math.min(100, (0.55 * dice(trigrams(a), trigrams(b)) + 0.45 * jaccard(ta, tb)) * 118));
+}
+
+/* --------------------------- semantic layer ---------------------------- */
+/* MiniLM cosine sits ~0.10-0.30 for unrelated text and ~0.55-0.95 for
+   paraphrases, so remap that live band onto 0-100 before blending. */
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const semScore = (cos) => Math.round(clamp01((cos - 0.30) / 0.60) * 100);
+
+function cosine(a, b) {
+  if (!a || !b) return 0;
+  let d = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return na && nb ? d / Math.sqrt(na * nb) : 0;
+}
+
+/* Blended verdict used everywhere a duplicate could hide.
+   A weighted average alone under-reports the interesting case: a true
+   paraphrase scores ~90 on meaning and ~10 on wording, averaging to a shrug.
+   So each channel can also carry the verdict on its own, slightly discounted. */
+function blend(lex, sem) {
+  if (sem === null) return { score: lex, lex, sem: null };
+  const avg = 0.6 * sem + 0.4 * lex;
+  return { score: Math.round(Math.max(avg, sem - 12, lex - 8)), lex, sem };
 }
 
 const band = (n) => (n >= 82 ? "collide" : n >= 62 ? "near" : n >= 40 ? "echo" : "clear");
@@ -278,20 +299,20 @@ const BAND_TEXT = {
   clear: ["Nothing like it yet", "clear to save"],
 };
 
-/* ---------- the six angles ---------- */
+/* ------------------------------- angles -------------------------------- */
 const ANGLES = [
-  { id: "def", short: "D", name: "Definition", probe: "What is it, precisely?" },
-  { id: "trade", short: "T", name: "Trade-offs", probe: "When would you not use it?" },
-  { id: "fail", short: "F", name: "Failure mode", probe: "What breaks, and how does it look?" },
-  { id: "story", short: "S", name: "Hands-on story", probe: "A time you actually used it." },
-  { id: "debug", short: "B", name: "Debugging", probe: "It's slow or wrong — now what?" },
-  { id: "scale", short: "L", name: "Scale & limits", probe: "What happens at 100x?" },
+  { id: "def",   short: "D", name: "Definition",     probe: "What is it exactly? Define the concept and explain precisely what it means and how it works internally." },
+  { id: "trade", short: "T", name: "Trade-offs",     probe: "When would you choose this over the alternative? Compare the options, the pros and cons, and the trade-offs involved." },
+  { id: "fail",  short: "F", name: "Failure mode",   probe: "What goes wrong with it? How does it break, fail, leak, or produce subtle bugs and bad edge cases?" },
+  { id: "story", short: "S", name: "Hands-on story", probe: "Tell me about a time you actually used this on a real project. Describe the situation and what you personally did." },
+  { id: "debug", short: "B", name: "Debugging",      probe: "It is slow or broken in production. How would you investigate it, measure it, and find the root cause?" },
+  { id: "scale", short: "L", name: "Scale & limits", probe: "What happens under heavy load or at very large scale? Discuss throughput, bottlenecks, capacity and hard limits." },
 ];
 const angleName = (id) => (ANGLES.find((a) => a.id === id) || ANGLES[0]).name;
 
-function guessAngle(q) {
+function guessAngleLexical(q) {
   const s = norm(q);
-  if (/\b(tell me about a time|time (you|when)|describe a (time|situation)|walk me through a project|have you ever)\b/.test(s)) return "story";
+  if (/\b(tell me about a time|time you|time when|describe a time|describe a situation|walk me through a project|have you ever)\b/.test(s)) return "story";
   if (/\b(debug|debugging|troubleshoot|slow|slower|regress|root cause|investigate|find out why|diagnose)\b/.test(s)) return "debug";
   if (/\b(scale|scaling|10x|100x|million|throughput|traffic|load|bottleneck|capacity|shard)\b/.test(s)) return "scale";
   if (/\b(fail|fails|failure|breaks|break|crash|leak|race|deadlock|what happens if|goes wrong|edge case)\b/.test(s)) return "fail";
@@ -299,21 +320,98 @@ function guessAngle(q) {
   return "def";
 }
 
-/* ---------- spaced repetition (5 boxes) ---------- */
-const INTERVALS = [0, 1, 3, 8, 21, 55];
+/* ---------------------------- FSRS scheduler ---------------------------- */
+/* Free Spaced Repetition Scheduler, v4.5 formulation with default weights.
+   Replaces fixed Leitner boxes: each card carries its own stability (days
+   until recall falls to 90%) and difficulty (1-10), fitted from your grades. */
+const W = [0.4872, 1.4003, 3.7145, 13.8206, 5.1618, 1.2298, 0.8975, 0.0310,
+           1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.5870, 0.2272, 2.8755];
+const DECAY = -0.5;
+const FACTOR = Math.pow(0.9, 1 / DECAY) - 1; /* 0.234568 */
 const DAY = 86400000;
 const now = () => Date.now();
-const dueIn = (box) => now() + INTERVALS[Math.min(box, INTERVALS.length - 1)] * DAY;
+const clampD = (d) => Math.min(10, Math.max(1, d));
+
+/* grades: 1 Again, 2 Hard, 3 Good, 4 Easy */
+const retrievability = (elapsedDays, S) => (S > 0 ? Math.pow(1 + FACTOR * (elapsedDays / S), DECAY) : 0);
+const intervalFor = (S, retention) => (S / FACTOR) * (Math.pow(retention, 1 / DECAY) - 1);
+
+const initStability = (g) => Math.max(0.1, W[g - 1]);
+const initDifficulty = (g) => clampD(W[4] - (g - 3) * W[5]);
+
+function nextDifficulty(D, g) {
+  const d1 = D - W[6] * (g - 3);
+  return clampD(W[7] * initDifficulty(3) + (1 - W[7]) * d1);
+}
+function stabilityRecall(D, S, R, g) {
+  const hard = g === 2 ? W[15] : 1;
+  const easy = g === 4 ? W[16] : 1;
+  const inc = Math.exp(W[8]) * (11 - D) * Math.pow(S, -W[9]) * (Math.exp(W[10] * (1 - R)) - 1) * hard * easy;
+  return S * (1 + inc);
+}
+function stabilityLapse(D, S, R) {
+  return Math.min(S, W[11] * Math.pow(D, -W[12]) * (Math.pow(S + 1, W[13]) - 1) * Math.exp(W[14] * (1 - R)));
+}
+
+/** Returns the updated scheduling fields for a card given a grade. */
+function schedule(card, g, retention) {
+  const ret = retention || 0.9;
+  const t = now();
+  let S, D, R;
+  if (!card.reps || card.stability == null) {
+    S = initStability(g);
+    D = initDifficulty(g);
+    R = 1;
+  } else {
+    const elapsed = Math.max(0, (t - (card.last || card.created || t)) / DAY);
+    R = retrievability(elapsed, card.stability);
+    D = nextDifficulty(card.difficultyF != null ? card.difficultyF : 5, g);
+    S = g === 1 ? stabilityLapse(D, card.stability, R) : stabilityRecall(D, card.stability, R, g);
+  }
+  S = Math.max(0.1, Math.min(36500, S));
+  let days = intervalFor(S, ret);
+  if (g === 1) days = Math.min(days, 0.007); /* ~10 minutes */
+  else days = Math.max(1, Math.min(365, days));
+  /* fuzz so a big import does not all come due on one day */
+  if (days >= 3) days = days * (0.95 + Math.random() * 0.1);
+  return {
+    stability: S,
+    difficultyF: D,
+    lastR: R,
+    reps: (card.reps || 0) + 1,
+    lapses: (card.lapses || 0) + (g === 1 ? 1 : 0),
+    last: t,
+    due: t + days * DAY,
+    interval: days,
+  };
+}
+function previewDays(card, g, retention) {
+  const probe = schedule({ ...card }, g, retention);
+  return probe.interval < 1 ? "10 min" : Math.round(probe.interval) + "d";
+}
 const isDue = (q) => q.due <= now();
 const fmtDue = (q) => {
-  const d = Math.round((q.due - now()) / DAY);
   if (q.due <= now()) return "due now";
-  if (d <= 1) return "due tomorrow";
-  return "due in " + d + "d";
+  const d = (q.due - now()) / DAY;
+  if (d < 1) return "due in " + Math.max(1, Math.round(d * 24)) + "h";
+  if (d < 2) return "due tomorrow";
+  if (d < 60) return "due in " + Math.round(d) + "d";
+  return "due in " + Math.round(d / 30) + "mo";
+};
+/* strength label from stability, replacing the old box number */
+const strengthOf = (q) => {
+  const s = q.stability || 0;
+  if (!q.reps) return "new";
+  if (s < 2) return "fragile";
+  if (s < 10) return "settling";
+  if (s < 45) return "solid";
+  return "durable";
 };
 
-/* ---------- concepts ---------- */
+/* --------------------------- concept helpers --------------------------- */
 const cnorm = (s) => norm(s).replace(/\s+/g, "");
+const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
+
 function resolveConcept(input, concepts) {
   const k = cnorm(input);
   if (!k) return { kind: "empty" };
@@ -321,326 +419,672 @@ function resolveConcept(input, concepts) {
     if (cnorm(c.name) === k || (c.aliases || []).some((a) => cnorm(a) === k)) return { kind: "exact", concept: c };
   }
   let best = null, score = 0;
-  for (const c of concepts) {
-    const s = similarity(c.name, input);
-    if (s > score) { score = s; best = c; }
-  }
+  for (const c of concepts) { const s = lexScore(c.name, input); if (s > score) { score = s; best = c; } }
   if (best && score >= 66) return { kind: "similar", concept: best, score };
   return { kind: "new" };
 }
 
-/* ---------- storage ---------- */
-const KEY = "qbank:v1";
-const EMPTY = { questions: [], concepts: [], talkTarget: 90 };
+/* -------------------------- answer beat parsing ------------------------- */
+function splitBeats(answer) {
+  if (!answer) return [];
+  return answer
+    .split(/\n+|(?<=[.;!?])\s+/)
+    .map((s) => s.trim().replace(/^[-*\u2022]\s*/, ""))
+    .filter((s) => s.length >= 12);
+}
+function splitSentences(t) {
+  if (!t) return [];
+  return t.split(/(?<=[.;!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 3);
+}
+/* lexical fallback coverage when embeddings are off */
+function lexCoverage(beat, transcript) {
+  const b = toks(beat), t = toks(transcript);
+  if (!b.size) return 0;
+  let hit = 0; b.forEach((w) => { if (t.has(w)) hit++; });
+  return hit / b.size;
+}
 
-const uid = () => Math.random().toString(36).slice(2, 9);
+/* ======================================================================
+   TIER 1 — IndexedDB store.  Four object stores so vectors (large, binary,
+   regenerable) never bloat the records you actually care about.
+   ====================================================================== */
+const DB_NAME = "qbank";
+const DB_VERSION = 1;
+const LEGACY_KEY = "qbank:v1";
 
-const STARTER = (() => {
+let _db = null;
+function openDB() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error("IndexedDB unavailable"));
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("questions")) {
+        const s = db.createObjectStore("questions", { keyPath: "id" });
+        s.createIndex("due", "due");
+        s.createIndex("conceptId", "conceptId");
+      }
+      if (!db.objectStoreNames.contains("concepts")) db.createObjectStore("concepts", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("vectors")) db.createObjectStore("vectors", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("reviews")) db.createObjectStore("reviews", { keyPath: "rid", autoIncrement: true });
+      if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "k" });
+    };
+    req.onsuccess = () => { _db = req.result; resolve(_db); };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function tx(store, mode, fn) {
+  return openDB().then((db) => new Promise((resolve, reject) => {
+    const t = db.transaction(store, mode);
+    const s = t.objectStore(store);
+    let out;
+    try { out = fn(s); } catch (e) { reject(e); return; }
+    t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  }));
+}
+const getAll = (store) => tx(store, "readonly", (s) => s.getAll());
+const putAll = (store, rows) => tx(store, "readwrite", (s) => { rows.forEach((r) => s.put(r)); });
+const putOne = (store, row) => tx(store, "readwrite", (s) => s.put(row));
+const delOne = (store, id) => tx(store, "readwrite", (s) => s.delete(id));
+const clearStore = (store) => tx(store, "readwrite", (s) => s.clear());
+const getOne = (store, id) => tx(store, "readonly", (s) => s.get(id));
+
+/** The single interface the UI talks to. Backend is swappable. */
+const Repo = {
+  async load() {
+    const [questions, concepts, meta] = await Promise.all([getAll("questions"), getAll("concepts"), getAll("meta")]);
+    const settings = (meta.find((m) => m.k === "settings") || {}).v || {};
+    return { questions, concepts, settings };
+  },
+  saveQuestion: (q) => putOne("questions", q),
+  saveQuestions: (qs) => putAll("questions", qs),
+  removeQuestion: (id) => delOne("questions", id),
+  saveConcept: (c) => putOne("concepts", c),
+  saveConcepts: (cs) => putAll("concepts", cs),
+  removeConcept: (id) => delOne("concepts", id),
+  saveSettings: (v) => putOne("meta", { k: "settings", v }),
+
+  /* vectors kept apart: Float32Array survives structured clone intact,
+     1536 raw bytes instead of ~7KB of JSON */
+  async allVectors() {
+    const rows = await getAll("vectors");
+    const m = new Map();
+    rows.forEach((r) => m.set(r.id, r.v));
+    return m;
+  },
+  putVector: (id, v) => putOne("vectors", { id, v }),
+  removeVector: (id) => delOne("vectors", id),
+  clearVectors: () => clearStore("vectors"),
+
+  /* append-only log: lets you rebuild a schedule or refit FSRS later */
+  logReview: (r) => putOne("reviews", r),
+  allReviews: () => getAll("reviews"),
+
+  async wipe() {
+    await Promise.all(["questions", "concepts", "vectors", "reviews", "meta"].map(clearStore));
+  },
+
+  /** One-time lift from the old localStorage blob. */
+  async migrateLegacy() {
+    let raw = null;
+    try { raw = localStorage.getItem(LEGACY_KEY); } catch (e) { return false; }
+    if (!raw) return false;
+    const existing = await getAll("questions");
+    if (existing.length) return false;
+    try {
+      const old = JSON.parse(raw);
+      const qs = (old.questions || []).map((q) => ({
+        ...q,
+        stability: q.box ? [0.5, 1.4, 3.7, 9, 21, 55][Math.min(q.box, 5)] : null,
+        difficultyF: 5,
+        interval: null,
+      }));
+      await putAll("questions", qs);
+      await putAll("concepts", old.concepts || []);
+      localStorage.setItem(LEGACY_KEY + ":migrated", "1");
+      return true;
+    } catch (e) { return false; }
+  },
+};
+
+/* ======================================================================
+   TIER 2 — export / import.  Vectors are deliberately excluded: they are
+   derived data, they triple the file size, and they regenerate in seconds.
+   ====================================================================== */
+const EXPORT_VERSION = 2;
+
+function buildExport(data, reviews) {
+  return JSON.stringify({
+    format: "thebank",
+    version: EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    counts: { questions: data.questions.length, concepts: data.concepts.length, reviews: reviews.length },
+    settings: data.settings,
+    concepts: data.concepts,
+    questions: data.questions,
+    reviews,
+  }, null, 2);
+}
+
+const stamp = () => new Date().toISOString().slice(0, 10);
+
+async function saveExport(text) {
+  const name = "the-bank-" + stamp() + ".json";
+  /* Chrome / Edge / Android: write straight into a folder you choose */
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "JSON backup", accept: { "application/json": [".json"] } }],
+      });
+      const w = await handle.createWritable();
+      await w.write(text);
+      await w.close();
+      return { ok: true, how: "picker", name };
+    } catch (e) {
+      if (e && e.name === "AbortError") return { ok: false, how: "cancelled" };
+    }
+  }
+  /* Safari / iOS / everything else */
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  return { ok: true, how: "download", name };
+}
+
+/** Merge by id, newest wins; unknown ids are added. Never destructive. */
+function mergeImport(current, incoming) {
+  const qById = new Map(current.questions.map((q) => [q.id, q]));
+  const cById = new Map(current.concepts.map((c) => [c.id, c]));
+  const cByName = new Map(current.concepts.map((c) => [cnorm(c.name), c]));
+  let added = 0, updated = 0, skipped = 0, newConcepts = 0;
+  const remap = new Map();
+
+  (incoming.concepts || []).forEach((c) => {
+    const sameName = cByName.get(cnorm(c.name));
+    if (cById.has(c.id)) { remap.set(c.id, c.id); return; }
+    if (sameName) { remap.set(c.id, sameName.id); return; }
+    cById.set(c.id, c); cByName.set(cnorm(c.name), c); remap.set(c.id, c.id); newConcepts++;
+  });
+
+  (incoming.questions || []).forEach((q) => {
+    const mapped = { ...q, conceptId: q.conceptId ? (remap.get(q.conceptId) || q.conceptId) : null };
+    const mine = qById.get(q.id);
+    if (!mine) {
+      /* guard against importing a text duplicate under a fresh id */
+      const clash = [...qById.values()].find((x) => lexScore(x.text, mapped.text) >= 92);
+      if (clash) { skipped++; return; }
+      qById.set(mapped.id, mapped); added++;
+    } else if ((mapped.last || mapped.created || 0) > (mine.last || mine.created || 0)) {
+      qById.set(q.id, mapped); updated++;
+    } else skipped++;
+  });
+
+  return {
+    data: { questions: [...qById.values()], concepts: [...cById.values()] },
+    report: { added, updated, skipped, newConcepts },
+  };
+}
+
+/* ======================================================================
+   ML manager — lazy, opt-in, and every call degrades to lexical on failure.
+   ====================================================================== */
+const ML = {
+  state: "off",          /* off | loading | ready | failed */
+  progress: 0,
+  error: null,
+  extractor: null,
+  angleVecs: null,
+  listeners: new Set(),
+  cache: new Map(),      /* text hash -> Float32Array, for the live typing gauge */
+
+  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
+  emit() { this.listeners.forEach((f) => f(this.state, this.progress, this.error)); },
+
+  async enable() {
+    if (this.state === "ready" || this.state === "loading") return this.state === "ready";
+    this.state = "loading"; this.progress = 0; this.error = null; this.emit();
+    try {
+      if (!window.__loadTransformers) throw new Error("module loader missing");
+      const ext = await window.__loadTransformers((p) => {
+        if (p && p.status === "progress" && p.total) {
+          this.progress = Math.round((p.loaded / p.total) * 100);
+          this.emit();
+        }
+      });
+      this.extractor = ext;
+      this.state = "ready"; this.progress = 100; this.emit();
+      this.angleVecs = {};
+      for (const a of ANGLES) this.angleVecs[a.id] = await this.embed(a.name + ". " + a.probe);
+      this.emit();
+      return true;
+    } catch (e) {
+      this.state = "failed";
+      this.error = (e && e.message) || "load failed";
+      this.emit();
+      return false;
+    }
+  },
+
+  async embed(text) {
+    if (this.state !== "ready" || !text) return null;
+    const key = text.slice(0, 400);
+    if (this.cache.has(key)) return this.cache.get(key);
+    const out = await this.extractor(key, { pooling: "mean", normalize: true });
+    const v = new Float32Array(out.data);
+    if (this.cache.size > 300) this.cache.clear();
+    this.cache.set(key, v);
+    return v;
+  },
+
+  async embedMany(texts) {
+    const out = [];
+    for (const t of texts) out.push(await this.embed(t));
+    return out;
+  },
+};
+
+/* ------------------------------- seed ---------------------------------- */
+const STARTER = () => {
   const cs = ["JavaScript", "React", "System design", "SQL", "Behavioural"].map((n) => ({ id: uid(), name: n, aliases: [] }));
   const byName = (n) => cs.find((c) => c.name === n).id;
   const raw = [
-    ["What is the event loop, and how does it order microtasks against macrotasks?", "JavaScript", "def", "Call stack empties, then the whole microtask queue drains (promises), then one macrotask (timers, I/O). Nested promises still finish before the next setTimeout."],
-    ["When would you reach for a WeakMap instead of a Map?", "JavaScript", "trade", "When keys are objects you don't own the lifetime of — private metadata, DOM node caches. Entries vanish with the key, so no leak. Cost: not iterable, no size."],
-    ["What problem do React keys solve during reconciliation?", "React", "def", "They give each child a stable identity across renders so React moves nodes instead of rebuilding them. Index keys break the moment the list reorders."],
-    ["What happens if you mutate state directly instead of replacing it?", "React", "fail", "The reference is unchanged, so bail-out checks and memo comparisons skip the re-render. It looks like a stale UI that fixes itself on the next unrelated update."],
-    ["Tell me about a time you made a slow React screen fast.", "React", "story", "Situation, the measurement you took first (Profiler, not a guess), the actual cause, the fix, and the number that moved."],
-    ["How would you keep a feed API responsive if traffic grew 10x overnight?", "System design", "scale", "Find the ceiling first. Then: read replicas, cache the fan-out, precompute timelines for heavy accounts, shed load at the edge, and degrade features rather than the whole page."],
-    ["When is eventual consistency an acceptable trade?", "System design", "trade", "When a stale read is cheap and a write stall is expensive — like counts, feeds, recommendations. Not for balances, seat booking, or anything a user reads back straight after writing."],
-    ["A query got 50x slower after a deploy. How do you find out why?", "SQL", "debug", "Compare plans before and after, check row estimates against reality, look for a dropped index, a changed data type forcing a cast, or new data volume flipping the planner's choice."],
-    ["What does a database index actually store, and why does that speed up reads?", "SQL", "def", "Usually a B-tree of sorted key values plus row pointers, so lookups become log-n descents instead of full scans. Writes pay for it, and the sort order determines which queries benefit."],
-    ["Describe a disagreement with a senior engineer and how it ended.", "Behavioural", "story", "Keep it technical, not personal. What you argued, what evidence you brought, what you conceded, what shipped, and what you'd do differently."],
+    ["What is the event loop, and how does it order microtasks against macrotasks?", "JavaScript", "def", "The call stack empties first.\nThen the entire microtask queue drains, so promises resolve before anything else.\nOnly then does one macrotask run, such as a timer or an I/O callback.\nNested promise chains still finish ahead of the next setTimeout."],
+    ["When would you reach for a WeakMap instead of a Map?", "JavaScript", "trade", "When the keys are objects whose lifetime you do not control, like DOM nodes or private metadata.\nEntries disappear when the key is collected, so you cannot leak memory.\nThe cost is that it is not iterable and has no size."],
+    ["What problem do React keys solve during reconciliation?", "React", "def", "Keys give each child a stable identity across renders.\nWith them React moves existing nodes instead of tearing down and rebuilding.\nIndex keys break the moment the list reorders, because identity shifts with position."],
+    ["What happens if you mutate React state directly instead of replacing it?", "React", "fail", "The object reference does not change, so bail-out checks and memo comparisons see no difference.\nThe re-render is skipped entirely.\nThe symptom is a stale UI that mysteriously corrects itself on the next unrelated update."],
+    ["Tell me about a time you made a slow React screen fast.", "React", "story", "Set the situation and who was affected.\nSay that you measured first with the Profiler rather than guessing.\nName the actual cause you found.\nDescribe the fix and the number that moved."],
+    ["How would you keep a feed API responsive if traffic grew 10x overnight?", "System design", "scale", "Find the current ceiling before changing anything.\nAdd read replicas and cache the fan-out.\nPrecompute timelines for heavy accounts instead of computing on read.\nShed load at the edge and degrade individual features rather than the whole page."],
+    ["When is eventual consistency an acceptable trade?", "System design", "trade", "When a stale read is cheap but a write stall is expensive: counts, feeds, recommendations.\nNot for balances, seat booking, or inventory.\nNever where a user reads back their own write immediately after making it."],
+    ["A query got 50x slower after a deploy. How do you find out why?", "SQL", "debug", "Compare the execution plan before and after.\nCheck whether row estimates match reality.\nLook for a dropped index, or a changed column type forcing an implicit cast.\nConsider whether data volume crossed a threshold that flipped the planner's choice."],
+    ["What does a database index actually store, and why does that speed up reads?", "SQL", "def", "Usually a B-tree of sorted key values plus pointers to rows.\nLookups become log-n descents rather than a full table scan.\nWrites pay the maintenance cost.\nThe sort order decides which queries can actually use it."],
+    ["Describe a disagreement with a senior engineer and how it ended.", "Behavioural", "story", "Keep it technical rather than personal.\nSay what you argued and what evidence you brought.\nSay what you conceded and why.\nEnd with what shipped and what you would do differently."],
   ];
+  const t = now();
   return {
     concepts: cs,
-    talkTarget: 90,
     questions: raw.map(([text, concept, angle, answer], i) => ({
       id: uid(), text, conceptId: byName(concept), angle, answer,
       difficulty: i % 3 === 0 ? "hard" : "medium",
-      box: 0, due: now(), reps: 0, lapses: 0, created: now() - i * 1000, variantOf: null,
+      due: t, created: t - i * 1000, last: null,
+      reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null, variantOf: null,
     })),
   };
-})();
+};
 
-/* ============================================================ */
+const DEFAULT_SETTINGS = { talkTarget: 90, retention: 0.9, mlEnabled: false, voice: true };
 
+/* ============================== app shell ============================== */
 function QuestionBank() {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState(null);
+  const [boot, setBoot] = useState("loading");
+  const [questions, setQuestions] = useState([]);
+  const [concepts, setConcepts] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [vecs, setVecs] = useState(new Map());
+  const [mlState, setMlState] = useState({ state: "off", progress: 0, error: null });
+  const [backfill, setBackfill] = useState(null);
   const [tab, setTab] = useState("add");
   const [prefill, setPrefill] = useState(null);
-  const saveT = useRef(null);
+  const [fatal, setFatal] = useState(null);
+
+  useEffect(() => ML.on((state, progress, error) => setMlState({ state, progress, error })), []);
 
   useEffect(() => {
-    let live = true;
     (async () => {
       try {
-        const r = await window.storage.get(KEY);
-        if (live) setData(r && r.value ? { ...EMPTY, ...JSON.parse(r.value) } : EMPTY);
-      } catch {
-        if (live) setData(EMPTY);
+        await openDB();
+        await Repo.migrateLegacy();
+        const d = await Repo.load();
+        const v = await Repo.allVectors();
+        setQuestions(d.questions);
+        setConcepts(d.concepts);
+        setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
+        setVecs(v);
+        setBoot("ready");
+        if (d.settings && d.settings.mlEnabled) enableML(d.questions, v);
+      } catch (e) {
+        setFatal("This browser blocked local storage, so nothing can be saved. Private mode often does this — try a normal window.");
+        setBoot("ready");
       }
     })();
-    return () => { live = false; };
   }, []);
 
-  const commit = useCallback((next) => {
-    setData(next);
-    clearTimeout(saveT.current);
-    saveT.current = setTimeout(async () => {
-      try {
-        const r = await window.storage.set(KEY, JSON.stringify(next));
-        if (!r) setErr("Couldn't save to this device. Your latest edits are only in this session.");
-        else setErr(null);
-      } catch {
-        setErr("Couldn't save to this device. Your latest edits are only in this session.");
+  /* ---- writes go through here so IndexedDB and memory never diverge ---- */
+  const putQ = useCallback(async (q) => {
+    setQuestions((prev) => { const i = prev.findIndex((x) => x.id === q.id); if (i < 0) return [q, ...prev]; const c = [...prev]; c[i] = q; return c; });
+    try { await Repo.saveQuestion(q); } catch (e) { setFatal("Save failed. Your last change is only in memory."); }
+  }, []);
+  const dropQ = useCallback(async (id) => {
+    setQuestions((prev) => prev.filter((x) => x.id !== id && x.variantOf !== id));
+    try { await Repo.removeQuestion(id); await Repo.removeVector(id); } catch (e) {}
+  }, []);
+  const putC = useCallback(async (c) => {
+    setConcepts((prev) => { const i = prev.findIndex((x) => x.id === c.id); if (i < 0) return [...prev, c]; const n = [...prev]; n[i] = c; return n; });
+    try { await Repo.saveConcept(c); } catch (e) {}
+  }, []);
+  const putSettings = useCallback(async (patch) => {
+    setSettings((prev) => { const next = { ...prev, ...patch }; Repo.saveSettings(next).catch(() => {}); return next; });
+  }, []);
+  const putVec = useCallback(async (id, v) => {
+    setVecs((prev) => { const m = new Map(prev); m.set(id, v); return m; });
+    try { await Repo.putVector(id, v); } catch (e) {}
+  }, []);
+
+  /* ---- turn on embeddings and backfill every question that lacks one ---- */
+  const enableML = useCallback(async (qs, existing) => {
+    const ok = await ML.enable();
+    if (!ok) return false;
+    const list = qs || questions;
+    const have = existing || vecs;
+    const todo = list.filter((q) => !have.get(q.id));
+    if (todo.length) {
+      setBackfill({ done: 0, total: todo.length });
+      const next = new Map(have);
+      for (let i = 0; i < todo.length; i++) {
+        const v = await ML.embed(todo[i].text);
+        if (v) { next.set(todo[i].id, v); Repo.putVector(todo[i].id, v).catch(() => {}); }
+        if (i % 3 === 0 || i === todo.length - 1) setBackfill({ done: i + 1, total: todo.length });
       }
-    }, 350);
-  }, []);
+      setVecs(next);
+      setBackfill(null);
+    }
+    return true;
+  }, [questions, vecs]);
 
-  if (!data) {
-    return (
-      <div className="qb">
-        <style>{CSS}</style>
-        <div className="wrap">
-          <div className="mast"><h1>The <em>Bank</em></h1><p>Opening your question bank…</p></div>
-        </div>
-      </div>
-    );
+  const mlReady = mlState.state === "ready" && !backfill;
+
+  if (boot === "loading") {
+    return <div className="qb"><style>{CSS}</style><div className="wrap">
+      <div className="mast"><div><h1>The <em>Bank</em></h1><p>Opening your local database…</p></div></div>
+    </div></div>;
   }
 
-  const dueCount = data.questions.filter(isDue).length;
+  const dueCount = questions.filter((q) => !q.variantOf && isDue(q)).length;
+  const ctx = { questions, concepts, settings, vecs, mlReady, putQ, dropQ, putC, putVec, putSettings };
 
   return (
     <div className="qb">
       <style>{CSS}</style>
       <div className="wrap">
         <div className="mast">
-          <h1>The <em>Bank</em></h1>
-          <p>{data.questions.length} questions · {data.concepts.length} concepts · no duplicates</p>
+          <div>
+            <h1>The <em>Bank</em></h1>
+            <p>{questions.length} questions · {concepts.length} concepts · no duplicates</p>
+          </div>
+          <button
+            className={"mlpill " + (mlState.state === "ready" ? "on" : mlState.state === "loading" ? "load" : "")}
+            onClick={() => setTab("data")}
+            title="Semantic matching status"
+          >
+            <span className="led" />
+            {mlState.state === "ready" ? (backfill ? "indexing" : "semantic") : mlState.state === "loading" ? mlState.progress + "%" : mlState.state === "failed" ? "lexical" : "lexical"}
+          </button>
         </div>
 
         <div className="tabs" role="tablist">
-          {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["bank", "Bank"]].map(([k, label]) => (
+          {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["bank", "Bank"], ["data", "Data"]].map(([k, label]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-              {label}
-              {k === "review" && dueCount > 0 && <span className="badge">{dueCount}</span>}
+              {label}{k === "review" && dueCount > 0 && <span className="badge">{dueCount}</span>}
             </button>
           ))}
         </div>
 
-        {err && <div className="alert warn" style={{ marginTop: 0, marginBottom: 14 }}><b>Not saved</b>{err}</div>}
+        {fatal && <div className="alert stop" style={{ marginTop: 0, marginBottom: 14 }}><b>Storage problem</b>{fatal}</div>}
+        {backfill && (
+          <div className="alert ml" style={{ marginTop: 0, marginBottom: 14 }}>
+            <b>Indexing your bank</b>
+            Building meaning vectors — {backfill.done} of {backfill.total}.
+            <div className="bar"><i style={{ width: Math.round((backfill.done / backfill.total) * 100) + "%" }} /></div>
+          </div>
+        )}
 
-        {tab === "add" && <AddView data={data} commit={commit} prefill={prefill} clearPrefill={() => setPrefill(null)} />}
-        {tab === "review" && <ReviewView data={data} commit={commit} goAdd={() => setTab("add")} />}
-        {tab === "coverage" && <CoverageView data={data} onGap={(p) => { setPrefill(p); setTab("add"); }} />}
-        {tab === "bank" && <BankView data={data} commit={commit} goAdd={() => setTab("add")} />}
+        {tab === "add" && <AddView ctx={ctx} prefill={prefill} clearPrefill={() => setPrefill(null)} />}
+        {tab === "review" && <ReviewView ctx={ctx} goAdd={() => setTab("add")} />}
+        {tab === "coverage" && <CoverageView ctx={ctx} onGap={(p) => { setPrefill(p); setTab("add"); }} />}
+        {tab === "bank" && <BankView ctx={ctx} goAdd={() => setTab("add")} seed={async () => {
+          const s = STARTER();
+          await Repo.saveConcepts(s.concepts); await Repo.saveQuestions(s.questions);
+          setConcepts(s.concepts); setQuestions(s.questions);
+        }} />}
+        {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill}
+          enableML={() => { putSettings({ mlEnabled: true }); enableML(); }}
+          setAll={(q, c) => { setQuestions(q); setConcepts(c); }} />}
       </div>
     </div>
   );
 }
 
-/* ============================ ADD ============================ */
-
-function AddView({ data, commit, prefill, clearPrefill }) {
+/* ================================ ADD ================================== */
+function AddView({ ctx, prefill, clearPrefill }) {
+  const { questions, concepts, vecs, mlReady, putQ, putC, putVec } = ctx;
   const [text, setText] = useState("");
   const [answer, setAnswer] = useState("");
   const [conceptInput, setConceptInput] = useState("");
   const [conceptId, setConceptId] = useState(null);
   const [angle, setAngle] = useState(null);
+  const [angleAuto, setAngleAuto] = useState(null);
   const [difficulty, setDifficulty] = useState("medium");
   const [override, setOverride] = useState(false);
   const [flash, setFlash] = useState(null);
   const [debounced, setDebounced] = useState("");
+  const [liveVec, setLiveVec] = useState(null);
+  const [thinking, setThinking] = useState(false);
+  const [touchedConcept, setTouchedConcept] = useState(false);
+
+  const conceptOf = (id) => concepts.find((c) => c.id === id);
 
   useEffect(() => {
     if (!prefill) return;
     setText(prefill.text || "");
     setConceptId(prefill.conceptId || null);
+    setTouchedConcept(true);
+    if (prefill.angle) { setAngle(prefill.angle); }
     setConceptInput("");
-    if (prefill.angle) setAngle(prefill.angle);
     clearPrefill();
   }, [prefill, clearPrefill]);
 
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(text), 180);
-    return () => clearTimeout(t);
-  }, [text]);
+  useEffect(() => { const t = setTimeout(() => setDebounced(text), 220); return () => clearTimeout(t); }, [text]);
 
   const active = debounced.trim().length >= 8;
 
+  /* embed what is being typed, cancel if it changes underneath us */
+  useEffect(() => {
+    let dead = false;
+    if (!active || !mlReady) { setLiveVec(null); return; }
+    setThinking(true);
+    ML.embed(debounced).then((v) => { if (!dead) { setLiveVec(v); setThinking(false); } })
+      .catch(() => { if (!dead) setThinking(false); });
+    return () => { dead = true; };
+  }, [debounced, active, mlReady]);
+
+  /* ---- the collision check: lexical always, semantic when available ---- */
   const matches = useMemo(() => {
     if (!active) return [];
-    return data.questions
-      .map((q) => ({ q, score: similarity(debounced, q.text) }))
+    return questions
+      .map((q) => {
+        const lex = lexScore(debounced, q.text);
+        let sem = null;
+        if (liveVec) { const v = vecs.get(q.id); if (v) sem = semScore(cosine(liveVec, v)); }
+        const b = blend(lex, sem);
+        return { q, ...b };
+      })
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
       .filter((m) => m.score >= 22);
-  }, [debounced, active, data.questions]);
+  }, [debounced, active, questions, vecs, liveVec]);
 
-  const top = matches.length ? matches[0].score : 0;
-  const bnd = active ? band(top) : "clear";
+  const top = matches.length ? matches[0] : null;
+  const score = top ? top.score : 0;
+  const bnd = active ? band(score) : "clear";
   const blocked = active && bnd === "collide" && !override;
 
-  const conceptOf = (id) => data.concepts.find((c) => c.id === id);
+  /* ---- auto-tag: nearest angle probe, and kNN vote for the concept ---- */
+  useEffect(() => {
+    if (!active) { setAngleAuto(null); return; }
+    if (liveVec && ML.angleVecs) {
+      let best = null, bs = -1;
+      ANGLES.forEach((a) => { const s = cosine(liveVec, ML.angleVecs[a.id]); if (s > bs) { bs = s; best = a.id; } });
+      setAngleAuto({ id: best, conf: Math.round(clamp01((bs - 0.15) / 0.45) * 100), how: "meaning" });
+    } else {
+      setAngleAuto({ id: guessAngleLexical(debounced), conf: null, how: "wording" });
+    }
+  }, [liveVec, debounced, active]);
 
-  /* concept suggestions from the words in the question */
-  const suggestedConcepts = useMemo(() => {
+  useEffect(() => { if (angleAuto && angle === null) setAngle(angleAuto.id); }, [angleAuto, angle]);
+
+  const conceptSuggestions = useMemo(() => {
     if (!active) return [];
+    if (liveVec) {
+      /* k nearest neighbours, similarity-weighted vote */
+      const scored = questions
+        .filter((q) => q.conceptId && vecs.get(q.id))
+        .map((q) => ({ q, s: cosine(liveVec, vecs.get(q.id)) }))
+        .sort((a, b) => b.s - a.s)
+        .slice(0, 5)
+        .filter((x) => x.s > 0.25);
+      const votes = {};
+      scored.forEach(({ q, s }) => { votes[q.conceptId] = (votes[q.conceptId] || 0) + s; });
+      const total = Object.values(votes).reduce((a, b) => a + b, 0) || 1;
+      return Object.keys(votes)
+        .sort((a, b) => votes[b] - votes[a]).slice(0, 3)
+        .map((id) => ({ c: conceptOf(id), conf: Math.round((votes[id] / total) * 100) }))
+        .filter((x) => x.c);
+    }
     const t = toks(debounced);
-    return data.concepts
+    return concepts
       .map((c) => {
         const bag = new Set();
-        data.questions.filter((q) => q.conceptId === c.id).forEach((q) => toks(q.text).forEach((w) => bag.add(w)));
+        questions.filter((q) => q.conceptId === c.id).forEach((q) => toks(q.text).forEach((w) => bag.add(w)));
         toks(c.name).forEach((w) => bag.add(w));
-        let hit = 0;
-        t.forEach((w) => { if (bag.has(w)) hit++; });
-        return { c, hit };
+        let hit = 0; t.forEach((w) => { if (bag.has(w)) hit++; });
+        return { c, conf: null, hit };
       })
-      .filter((x) => x.hit > 0)
-      .sort((a, b) => b.hit - a.hit)
-      .slice(0, 4)
-      .map((x) => x.c);
-  }, [debounced, active, data.concepts, data.questions]);
+      .filter((x) => x.hit > 0).sort((a, b) => b.hit - a.hit).slice(0, 4);
+  }, [debounced, active, liveVec, questions, concepts, vecs]);
 
-  const guessed = active ? guessAngle(debounced) : null;
-  useEffect(() => { if (guessed && angle === null) setAngle(guessed); }, [guessed, angle]);
+  /* accept the top suggestion automatically until the user overrides it */
+  useEffect(() => {
+    if (touchedConcept || conceptId || !conceptSuggestions.length) return;
+    const top0 = conceptSuggestions[0];
+    if (top0.conf === null || top0.conf >= 55) setConceptId(top0.c.id);
+  }, [conceptSuggestions, touchedConcept, conceptId]);
 
   const difficultyHint = useMemo(() => {
     const near = matches.filter((m) => m.score >= 40);
     if (near.length < 2) return null;
     const counts = {};
     near.forEach((m) => { counts[m.q.difficulty] = (counts[m.q.difficulty] || 0) + 1; });
-    const win = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
-    return win;
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
   }, [matches]);
 
-  const resolution = useMemo(
-    () => (conceptInput.trim() ? resolveConcept(conceptInput, data.concepts) : null),
-    [conceptInput, data.concepts]
-  );
+  const resolution = useMemo(() => (conceptInput.trim() ? resolveConcept(conceptInput, concepts) : null), [conceptInput, concepts]);
 
-  /* which angles this concept still lacks */
   const gapAngles = useMemo(() => {
     if (!conceptId) return [];
-    const have = new Set(data.questions.filter((q) => q.conceptId === conceptId).map((q) => q.angle));
+    const have = new Set(questions.filter((q) => q.conceptId === conceptId).map((q) => q.angle));
     return ANGLES.filter((a) => !have.has(a.id));
-  }, [conceptId, data.questions]);
+  }, [conceptId, questions]);
 
-  function pickConcept(c) { setConceptId(c.id); setConceptInput(""); }
+  function pickConcept(c) { setConceptId(c.id); setConceptInput(""); setTouchedConcept(true); }
 
   function useAliasFor(c) {
     const typed = conceptInput.trim();
-    const next = {
-      ...data,
-      concepts: data.concepts.map((x) =>
-        x.id === c.id ? { ...x, aliases: [...(x.aliases || []), typed] } : x
-      ),
-    };
-    commit(next);
-    setConceptId(c.id);
-    setConceptInput("");
+    putC({ ...c, aliases: [...(c.aliases || []), typed] });
+    pickConcept(c);
     setFlash({ kind: "ok", title: "Folded in", body: '"' + typed + '" now points at ' + c.name + '. Type it again any time.' });
   }
-
   function createConcept() {
     const name = conceptInput.trim().replace(/\s+/g, " ");
     const c = { id: uid(), name: name.charAt(0).toUpperCase() + name.slice(1), aliases: [] };
-    commit({ ...data, concepts: [...data.concepts, c] });
-    setConceptId(c.id);
-    setConceptInput("");
+    putC(c); pickConcept(c);
   }
 
-  function save(asVariant) {
+  async function save(asVariant) {
+    const clean = text.trim().replace(/\s+/g, " ");
     const q = {
-      id: uid(),
-      text: text.trim().replace(/\s+/g, " "),
-      answer: answer.trim(),
-      conceptId,
-      angle: angle || "def",
-      difficulty,
-      box: 0, due: now(), reps: 0, lapses: 0, created: now(),
-      variantOf: asVariant ? matches[0].q.id : null,
+      id: uid(), text: clean, answer: answer.trim(), conceptId, angle: angle || "def", difficulty,
+      due: now(), created: now(), last: null,
+      reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null,
+      variantOf: asVariant && top ? top.q.id : null,
     };
-    commit({ ...data, questions: [q, ...data.questions] });
-    setText(""); setAnswer(""); setAngle(null); setOverride(false); setDebounced("");
+    await putQ(q);
+    if (mlReady) { const v = liveVec || (await ML.embed(clean)); if (v) putVec(q.id, v); }
+    setText(""); setAnswer(""); setAngle(null); setOverride(false); setDebounced(""); setLiveVec(null);
+    setTouchedConcept(false);
     setFlash({
       kind: "ok",
       title: asVariant ? "Saved as a variant" : "Added to the bank",
       body: asVariant
         ? "Filed under the question it resembles, so review shows one of them at a time."
-        : "First review is queued for today. " + (conceptId ? angleName(q.angle) + " angle covered for " + conceptOf(conceptId).name + "." : ""),
+        : "Queued for today. " + (conceptId ? angleName(q.angle) + " covered for " + conceptOf(conceptId).name + "." : "No concept, so it stays outside Coverage."),
     });
   }
 
-  if (!data.questions.length && !data.concepts.length) {
-    return (
-      <div className="card">
-        <div className="empty">
-          <h3>An empty bank can't spot a duplicate.</h3>
-          <p>Load ten real questions across five concepts, then try typing something similar — the gauge will catch you.</p>
-          <button className="btn" onClick={() => commit({ ...EMPTY, ...STARTER })}>Load the starter set</button>
-          <p style={{ marginTop: 14, marginBottom: 0, fontSize: 12.5 }}>Or just start typing below.</p>
-        </div>
-        <div className="field" style={{ marginTop: 4 }}>
-          <span className="eyebrow">The question</span>
-          <textarea className="q" value={text} onChange={(e) => setText(e.target.value)} placeholder="Type the question as an interviewer would ask it…" />
-        </div>
-      </div>
-    );
-  }
+  const empty = !questions.length && !concepts.length;
 
   return (
     <>
-      {flash && (
-        <div className={"alert " + (flash.kind === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}>
-          <b>{flash.title}</b>{flash.body}
-        </div>
-      )}
+      {flash && <div className={"alert " + (flash.kind === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}><b>{flash.title}</b>{flash.body}</div>}
 
       <div className="card">
         <div className="field">
           <span className="eyebrow">The question</span>
-          <textarea
-            className="q" value={text}
+          <textarea className="q" value={text}
             onChange={(e) => { setText(e.target.value); setOverride(false); setFlash(null); }}
-            placeholder="Type the question as an interviewer would ask it…"
-          />
-          <p className="hint">Measured against all {data.questions.length} questions as you type.</p>
+            placeholder="Type the question as an interviewer would ask it…" />
+          <p className="hint">
+            {empty ? "Nothing to compare against yet — load the starter set from the Bank tab."
+              : mlReady ? "Compared against all " + questions.length + " by meaning and by wording."
+              : "Compared against all " + questions.length + " by wording. Turn on semantic matching in Data to catch paraphrases."}
+          </p>
         </div>
 
-        {/* ---- COLLISION GAUGE ---- */}
         <div className="gauge">
           <div className="gauge-top">
             <div className="gauge-num" style={{ color: active ? BAND_COLOR[bnd] : "#C3C9D6" }}>
-              {active ? top : "—"}<span>{active ? "%" : ""}</span>
+              {active ? score : "—"}<span>{active ? "%" : ""}</span>
             </div>
             <div className="gauge-verdict">
-              <b style={{ color: active ? BAND_COLOR[bnd] : "var(--soft)" }}>
-                {active ? BAND_TEXT[bnd][0] : "Waiting for a question"}
-              </b>
+              <b style={{ color: active ? BAND_COLOR[bnd] : "var(--soft)" }}>{active ? BAND_TEXT[bnd][0] : "Waiting for a question"}</b>
               <small>{active ? BAND_TEXT[bnd][1] : "eight characters to start"}</small>
             </div>
           </div>
           <div className="ticks" aria-hidden="true">
             {Array.from({ length: 20 }).map((_, i) => {
-              const lit = active && top >= (i + 1) * 5;
+              const lit = active && score >= (i + 1) * 5;
               return <i key={i} className={lit ? "lit" : ""} style={lit ? { background: BAND_COLOR[bnd] } : undefined} />;
             })}
           </div>
           <div className="ticks-scale"><span>NEW</span><span>OVERLAP</span><span>DUPLICATE</span></div>
+          {active && top && (
+            <div className="split">
+              <span>wording <b>{top.lex}%</b></span>
+              <span>meaning <b>{top.sem === null ? (thinking ? "…" : "off") : top.sem + "%"}</b></span>
+            </div>
+          )}
         </div>
 
         {matches.length > 0 && (
           <div className="near">
             <span className="eyebrow">Closest in the bank</span>
-            {matches.map(({ q, score }) => {
-              const c = conceptOf(q.conceptId);
+            {matches.map((m) => {
+              const c = conceptOf(m.q.conceptId);
               return (
-                <div className="near-row" key={q.id}>
-                  <span className="pct" style={{ color: BAND_COLOR[band(score)] }}>{score}%</span>
+                <div className="near-row" key={m.q.id}>
+                  <span className="pct" style={{ color: BAND_COLOR[band(m.score)] }}>{m.score}%</span>
                   <div>
-                    <div className="near-q">{q.text}</div>
-                    <div className="near-meta">{c ? c.name : "unfiled"} · {angleName(q.angle)} · box {q.box + 1}</div>
+                    <div className="near-q">{m.q.text}</div>
+                    <div className="near-meta">
+                      {c ? c.name : "unfiled"} · {angleName(m.q.angle)} · {strengthOf(m.q)}
+                      {m.sem !== null && m.sem - m.lex >= 22 ? " · caught by meaning" : ""}
+                    </div>
                   </div>
                 </div>
               );
@@ -651,7 +1095,7 @@ function AddView({ data, commit, prefill, clearPrefill }) {
         {active && bnd === "collide" && !override && (
           <div className="alert stop">
             <b>This one's already asked.</b>
-            You can sharpen the wording, or keep it as a variant of the existing question so review never shows you both.
+            Sharpen the wording, or keep it as a variant of the existing question so review never shows you both.
             <div className="row" style={{ marginTop: 10 }}>
               <button className="btn tiny line" onClick={() => setOverride(true)}>Keep as a variant</button>
             </div>
@@ -660,54 +1104,45 @@ function AddView({ data, commit, prefill, clearPrefill }) {
         {active && bnd === "near" && (
           <div className="alert warn">
             <b>Close, but maybe not the same.</b>
-            If it tests a different angle, keep it. If it's the same answer in new words, edit the one above instead.
+            If it tests a different angle, keep it. If it has the same answer in new words, edit the one above instead.
           </div>
         )}
       </div>
 
-      {/* ---- concept ---- */}
       <div className="card">
-        <span className="eyebrow">Concept</span>
+        <span className="eyebrow">Concept {liveVec && conceptSuggestions.length > 0 && !conceptId ? "— suggested from nearest questions" : ""}</span>
         {conceptId ? (
           <div className="chips">
-            <button className="chip on" onClick={() => setConceptId(null)}>
-              {conceptOf(conceptId).name}<span className="x">✕</span>
+            <button className="chip on" onClick={() => { setConceptId(null); setTouchedConcept(true); }}>
+              {conceptOf(conceptId) ? conceptOf(conceptId).name : "?"}<span className="x">✕</span>
             </button>
           </div>
         ) : (
           <>
-            <input
-              className="t" value={conceptInput}
-              onChange={(e) => setConceptInput(e.target.value)}
-              placeholder="Search or name a concept…"
-            />
-            {conceptInput.trim() === "" && suggestedConcepts.length > 0 && (
-              <>
-                <p className="hint">From the words you used:</p>
-                <div className="chips">
-                  {suggestedConcepts.map((c) => (
-                    <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>
-                  ))}
-                </div>
-              </>
+            <input className="t" value={conceptInput} onChange={(e) => { setConceptInput(e.target.value); setTouchedConcept(true); }} placeholder="Search or name a concept…" />
+            {conceptInput.trim() === "" && conceptSuggestions.length > 0 && (
+              <div className="chips">
+                {conceptSuggestions.map(({ c, conf }) => (
+                  <button key={c.id} className="chip" onClick={() => pickConcept(c)}>
+                    {c.name}{conf !== null && <span className="conf">{conf}%</span>}
+                  </button>
+                ))}
+              </div>
             )}
             {conceptInput.trim() !== "" && (
               <div className="chips">
-                {data.concepts
-                  .filter((c) => cnorm(c.name).includes(cnorm(conceptInput)) || (c.aliases || []).some((a) => cnorm(a).includes(cnorm(conceptInput))))
-                  .slice(0, 6)
-                  .map((c) => <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>)}
+                {concepts.filter((c) => cnorm(c.name).includes(cnorm(conceptInput)) || (c.aliases || []).some((a) => cnorm(a).includes(cnorm(conceptInput))))
+                  .slice(0, 6).map((c) => <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>)}
               </div>
             )}
             {resolution && resolution.kind === "exact" && (
               <div className="alert ok"><b>{resolution.concept.name} already exists.</b>
-                <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => pickConcept(resolution.concept)}>Use it</button>
-              </div>
+                <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => pickConcept(resolution.concept)}>Use it</button></div>
             )}
             {resolution && resolution.kind === "similar" && (
               <div className="alert warn">
                 <b>Did you mean {resolution.concept.name}?</b>
-                Two spellings of one concept will split your coverage in half.
+                Two spellings of one concept split your coverage in half.
                 <div className="row" style={{ marginTop: 10 }}>
                   <button className="btn tiny" onClick={() => useAliasFor(resolution.concept)}>Use {resolution.concept.name}</button>
                   <button className="btn tiny line" onClick={createConcept}>Keep separate</button>
@@ -715,31 +1150,30 @@ function AddView({ data, commit, prefill, clearPrefill }) {
               </div>
             )}
             {resolution && resolution.kind === "new" && (
-              <button className="btn tiny line" style={{ marginTop: 10 }} onClick={createConcept}>
-                Create “{conceptInput.trim()}”
-              </button>
+              <button className="btn tiny line" style={{ marginTop: 10 }} onClick={createConcept}>Create “{conceptInput.trim()}”</button>
             )}
           </>
         )}
       </div>
 
-      {/* ---- angle + difficulty ---- */}
       <div className="card">
-        <span className="eyebrow">Angle {guessed && <span style={{ textTransform: "none", letterSpacing: 0 }}>— read as {angleName(guessed)}</span>}</span>
+        <span className="eyebrow">
+          Angle
+          {angleAuto && <span style={{ textTransform: "none", letterSpacing: 0 }}>
+            {" — read as " + angleName(angleAuto.id) + " from " + angleAuto.how}
+            {angleAuto.conf !== null ? " (" + angleAuto.conf + "%)" : ""}
+          </span>}
+        </span>
         <div className="chips">
-          {ANGLES.map((a) => (
-            <button key={a.id} className={"chip" + (angle === a.id ? " on" : "")} onClick={() => setAngle(a.id)}>{a.name}</button>
-          ))}
+          {ANGLES.map((a) => <button key={a.id} className={"chip" + (angle === a.id ? " on" : "")} onClick={() => setAngle(a.id)}>{a.name}</button>)}
         </div>
         <p className="hint">Every concept is worth asking six ways. The angle is how Coverage finds your blind spots.</p>
 
         {conceptId && gapAngles.length > 0 && (
           <>
-            <span className="eyebrow" style={{ marginTop: 16 }}>Still unasked for {conceptOf(conceptId).name}</span>
+            <span className="eyebrow" style={{ marginTop: 16 }}>Still unasked for {conceptOf(conceptId) ? conceptOf(conceptId).name : ""}</span>
             <div className="chips">
-              {gapAngles.map((a) => (
-                <button key={a.id} className="chip ghost" onClick={() => setAngle(a.id)}>{a.name}</button>
-              ))}
+              {gapAngles.map((a) => <button key={a.id} className="chip ghost" onClick={() => setAngle(a.id)}>{a.name}</button>)}
             </div>
           </>
         )}
@@ -747,153 +1181,293 @@ function AddView({ data, commit, prefill, clearPrefill }) {
         <div className="field">
           <span className="eyebrow">Difficulty {difficultyHint && <span style={{ textTransform: "none", letterSpacing: 0 }}>— similar ones are {difficultyHint}</span>}</span>
           <div className="chips">
-            {["easy", "medium", "hard"].map((d) => (
-              <button key={d} className={"chip" + (difficulty === d ? " on" : "")} onClick={() => setDifficulty(d)}>{d}</button>
-            ))}
+            {["easy", "medium", "hard"].map((d) => <button key={d} className={"chip" + (difficulty === d ? " on" : "")} onClick={() => setDifficulty(d)}>{d}</button>)}
           </div>
         </div>
       </div>
 
-      {/* ---- answer ---- */}
       <div className="card">
         <span className="eyebrow">What a strong answer covers</span>
         <textarea className="q sm" value={answer} onChange={(e) => setAnswer(e.target.value)}
-          placeholder="Three or four beats you want to hit out loud. Not a script." />
-        <p className="hint">Review reads this back to you after you've answered, so you can mark yourself honestly.</p>
+          placeholder={"One beat per line.\nReview checks your spoken answer against each one."} />
+        <p className="hint">
+          {splitBeats(answer).length > 0
+            ? splitBeats(answer).length + " beat" + (splitBeats(answer).length === 1 ? "" : "s") + " detected. Review will tell you which ones you skipped."
+            : "Write one beat per line. Review scores your spoken answer against them individually."}
+        </p>
       </div>
 
       <div className="card">
         <button className="btn" disabled={!text.trim() || blocked} onClick={() => save(override && bnd === "collide")}>
           {blocked ? "Too close to save" : override && bnd === "collide" ? "Save as a variant" : "Add to the bank"}
         </button>
-        {!conceptId && text.trim() && <p className="hint" style={{ textAlign: "center" }}>Saving without a concept leaves it out of Coverage.</p>}
       </div>
     </>
   );
 }
 
-/* =========================== REVIEW =========================== */
+/* ============================== REVIEW ================================= */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-function ReviewView({ data, commit, goAdd }) {
+function useDictation() {
+  const [supported] = useState(!!SR);
+  const [listening, setListening] = useState(false);
+  const [text, setText] = useState("");
+  const [interim, setInterim] = useState("");
+  const [error, setError] = useState(null);
+  const ref = useRef(null);
+  const finalRef = useRef("");
+
+  const start = useCallback(() => {
+    if (!SR) return;
+    setError(null); setText(""); setInterim(""); finalRef.current = "";
+    let r;
+    try { r = new SR(); } catch (e) { setError("mic unavailable"); return; }
+    r.continuous = true; r.interimResults = true; r.lang = navigator.language || "en-US";
+    r.onresult = (e) => {
+      let live = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const chunk = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalRef.current += chunk + " ";
+        else live += chunk;
+      }
+      setText(finalRef.current); setInterim(live);
+    };
+    r.onerror = (e) => {
+      const k = e.error;
+      setError(k === "not-allowed" || k === "service-not-allowed"
+        ? "Microphone blocked. Allow it in your browser's site settings, or answer without it."
+        : k === "no-speech" ? "Didn't hear anything." : "Speech recognition stopped (" + k + ").");
+      setListening(false);
+    };
+    r.onend = () => { if (ref.current === r) setListening(false); };
+    ref.current = r;
+    try { r.start(); setListening(true); } catch (e) { setError("Could not start the mic."); }
+  }, []);
+
+  const stop = useCallback(() => {
+    const r = ref.current;
+    if (r) { try { r.stop(); } catch (e) {} }
+    setListening(false);
+    setInterim("");
+    return (finalRef.current || "").trim();
+  }, []);
+
+  useEffect(() => () => { const r = ref.current; if (r) { try { r.abort(); } catch (e) {} } }, []);
+  return { supported, listening, text, interim, error, start, stop, setText };
+}
+
+/** Score a spoken answer beat by beat. Semantic when available, lexical otherwise. */
+async function gradeBeats(beats, transcript, mlReady) {
+  if (!beats.length || !transcript) return null;
+  const sents = splitSentences(transcript);
+  const pool = sents.length ? sents : [transcript];
+  if (mlReady) {
+    const [bv, pv] = [await ML.embedMany(beats), await ML.embedMany(pool)];
+    return beats.map((b, i) => {
+      let best = 0;
+      pv.forEach((v) => { const s = cosine(bv[i], v); if (s > best) best = s; });
+      /* whole-transcript check catches beats spread across sentences */
+      return { beat: b, score: best, state: best >= 0.46 ? "hit" : best >= 0.33 ? "part" : "miss" };
+    });
+  }
+  return beats.map((b) => {
+    const s = lexCoverage(b, transcript);
+    return { beat: b, score: s, state: s >= 0.5 ? "hit" : s >= 0.3 ? "part" : "miss" };
+  });
+}
+
+function suggestGrade(results, elapsed, target) {
+  if (!results || !results.length) return null;
+  const pts = results.reduce((a, r) => a + (r.state === "hit" ? 1 : r.state === "part" ? 0.5 : 0), 0);
+  const ratio = pts / results.length;
+  let g = ratio >= 0.85 ? 4 : ratio >= 0.6 ? 3 : ratio >= 0.3 ? 2 : 1;
+  if (g === 4 && elapsed > target * 1.5) g = 3;   /* rambling is not fluent */
+  if (g >= 3 && elapsed < 15) g = 2;              /* too short to be a real answer */
+  return { grade: g, ratio };
+}
+
+const GRADES = [
+  { g: 1, name: "Blanked", sub: "start over" },
+  { g: 2, name: "Shaky", sub: "" },
+  { g: 3, name: "Solid", sub: "" },
+  { g: 4, name: "Fluent", sub: "" },
+];
+
+function ReviewView({ ctx, goAdd }) {
+  const { questions, concepts, settings, mlReady, putQ } = ctx;
   const [phase, setPhase] = useState("ask");
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState([]);
+  const [results, setResults] = useState(null);
+  const [scoring, setScoring] = useState(false);
+  const [manual, setManual] = useState("");
+  const dict = useDictation();
 
-  const queue = useMemo(() => {
-    const skip = new Set();
-    data.questions.forEach((q) => { if (q.variantOf) skip.add(q.id); });
-    return data.questions
-      .filter((q) => !skip.has(q.id) && isDue(q) && !done.includes(q.id))
-      .sort((a, b) => a.due - b.due || a.box - b.box);
-  }, [data.questions, done]);
-
-  const ahead = useMemo(
-    () => data.questions.filter((q) => !q.variantOf && !isDue(q)).sort((a, b) => a.due - b.due),
-    [data.questions]
-  );
-
+  const queue = useMemo(() => questions
+    .filter((q) => !q.variantOf && isDue(q) && !done.includes(q.id))
+    .sort((a, b) => a.due - b.due), [questions, done]);
+  const ahead = useMemo(() => questions.filter((q) => !q.variantOf && !isDue(q)).sort((a, b) => a.due - b.due), [questions]);
   const card = queue[0];
 
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(t);
-  }, [running]);
+  useEffect(() => { if (!running) return; const t = setInterval(() => setElapsed((e) => e + 1), 1000); return () => clearInterval(t); }, [running]);
+  useEffect(() => { setPhase("ask"); setElapsed(0); setRunning(false); setResults(null); setManual(""); }, [card && card.id]);
 
-  useEffect(() => { setPhase("ask"); setElapsed(0); setRunning(false); }, [card && card.id]);
+  const target = settings.talkTarget || 90;
+  const beats = useMemo(() => (card ? splitBeats(card.answer) : []), [card]);
 
-  function grade(g) {
-    const q = card;
-    let box = q.box, lapses = q.lapses;
-    if (g === "again") { box = 0; lapses++; }
-    else if (g === "hard") box = Math.max(0, q.box);
-    else if (g === "good") box = Math.min(INTERVALS.length - 1, q.box + 1);
-    else box = Math.min(INTERVALS.length - 1, q.box + 2);
-    const next = data.questions.map((x) =>
-      x.id === q.id ? { ...x, box, lapses, reps: x.reps + 1, due: g === "again" ? now() + 600000 : dueIn(box), last: now() } : x
-    );
-    commit({ ...data, questions: next });
-    setDone((d) => [...d, q.id]);
+  async function finishTalking() {
+    setRunning(false);
+    const spoken = dict.listening ? dict.stop() : (dict.text || manual).trim();
+    setPhase("check");
+    if (beats.length && spoken) {
+      setScoring(true);
+      try { setResults(await gradeBeats(beats, spoken, mlReady)); } catch (e) { setResults(null); }
+      setScoring(false);
+    }
   }
 
-  if (!data.questions.length) {
+  async function grade(g) {
+    const patch = schedule(card, g, settings.retention);
+    const next = { ...card, ...patch };
+    await putQ(next);
+    Repo.logReview({
+      qid: card.id, at: now(), grade: g, elapsed,
+      stability: patch.stability, difficulty: patch.difficultyF, interval: patch.interval,
+      coverage: results ? results.filter((r) => r.state === "hit").length / results.length : null,
+      transcriptLen: (dict.text || manual || "").length,
+    }).catch(() => {});
+    setDone((d) => [...d, card.id]);
+  }
+
+  if (!questions.length) {
     return <div className="card"><div className="empty">
       <h3>Nothing to review yet.</h3>
       <p>Review pulls from the bank on a spacing schedule. Add a question and it shows up here today.</p>
       <button className="btn" onClick={goAdd}>Add a question</button>
     </div></div>;
   }
-
   if (!card) {
     const nxt = ahead[0];
     return <div className="card"><div className="empty">
       <h3>Queue clear.</h3>
-      <p>
-        {done.length > 0 ? "You answered " + done.length + " out loud. " : ""}
-        {nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}
-      </p>
+      <p>{done.length ? "You answered " + done.length + " out loud. " : ""}{nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}</p>
       <button className="btn line" onClick={goAdd}>Add a question</button>
     </div></div>;
   }
 
-  const concept = data.concepts.find((c) => c.id === card.conceptId);
-  const target = data.talkTarget || 90;
-  const variants = data.questions.filter((q) => q.variantOf === card.id);
+  const concept = concepts.find((c) => c.id === card.conceptId);
+  const variants = questions.filter((q) => q.variantOf === card.id);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
+  const sug = suggestGrade(results, elapsed, target);
 
   return (
     <>
       <div className="stat-row">
         <div className="stat"><b>{queue.length}</b><small>in queue</small></div>
         <div className="stat"><b>{done.length}</b><small>done today</small></div>
-        <div className="stat"><b>{card.box + 1}<span style={{ fontSize: 13, color: "var(--soft)" }}>/6</span></b><small>this box</small></div>
+        <div className="stat"><b>{strengthOf(card)}</b><small>strength</small></div>
       </div>
 
       <div className="card">
         <span className="eyebrow">{concept ? concept.name : "Unfiled"} · {angleName(card.angle)} · {card.difficulty}</span>
         <div className="rev-q">{card.text}</div>
-        {variants.length > 0 && (
-          <p className="hint" style={{ marginTop: 10 }}>Also asked as: {variants.map((v) => v.text).join(" / ")}</p>
-        )}
+        {variants.length > 0 && <p className="hint" style={{ marginTop: 10 }}>Also asked as: {variants.map((v) => v.text).join(" / ")}</p>}
 
         {phase === "ask" && (
           <>
-            <div className="alert ok" style={{ background: "#F1F3F8", border: "1px solid var(--rule)", color: "var(--ink)" }}>
+            <div className="alert info">
               <b>Say it out loud, on the clock.</b>
               Interviews are spoken. Reading the answer in your head is the reason it falls apart in the room.
+              {beats.length > 0 && dict.supported && " Your mic transcript gets checked against all " + beats.length + " beats."}
             </div>
-            <button className="btn" style={{ marginTop: 12 }} onClick={() => { setRunning(true); setPhase("talk"); }}>
-              Start answering
-            </button>
+            <div className="row" style={{ marginTop: 12 }}>
+              {dict.supported && (
+                <button className="btn" onClick={() => { dict.start(); setRunning(true); setPhase("talk"); }}>
+                  Answer with mic
+                </button>
+              )}
+              <button className={"btn " + (dict.supported ? "line" : "")} onClick={() => { setRunning(true); setPhase("talk"); }}>
+                {dict.supported ? "Without mic" : "Start answering"}
+              </button>
+            </div>
+            {!dict.supported && <p className="hint">This browser has no speech recognition, so grading falls back to self-assessment. Chrome handles it best.</p>}
           </>
         )}
 
         {phase === "talk" && (
           <div style={{ marginTop: 16 }}>
-            <div className="timer" style={{ color: elapsed > target ? "var(--warn)" : "var(--ink)" }}>{mm}:{ss}</div>
-            <div className="timer-bar"><i style={{ width: Math.min(100, (elapsed / target) * 100) + "%", background: elapsed > target ? "var(--warn)" : "var(--indigo)" }} /></div>
+            <div className="mic">
+              <div className={"mic-orb" + (dict.listening ? " live" : "")}>{dict.listening ? "●" : "○"}</div>
+              <div style={{ flex: 1 }}>
+                <div className="timer" style={{ color: elapsed > target ? "var(--warn)" : "var(--ink)" }}>{mm}:{ss}</div>
+                <div className="timer-bar"><i style={{ width: Math.min(100, (elapsed / target) * 100) + "%", background: elapsed > target ? "var(--warn)" : "var(--indigo)" }} /></div>
+              </div>
+            </div>
             <p className="hint">Aim for {target}s. Over that and you're rambling; under 20s and you're thin.</p>
-            <button className="btn line" style={{ marginTop: 10 }} onClick={() => { setRunning(false); setPhase("check"); }}>
-              Done — show me the answer
-            </button>
+            {dict.error && <div className="alert warn"><b>Mic trouble</b>{dict.error}</div>}
+            {(dict.text || dict.interim) && (
+              <div className="transcript">{dict.text}<em>{dict.interim}</em></div>
+            )}
+            {!dict.listening && !dict.text && (
+              <textarea className="q sm" style={{ marginTop: 12 }} value={manual} onChange={(e) => setManual(e.target.value)}
+                placeholder="Optional: type the gist of what you said, and it gets scored the same way." />
+            )}
+            <button className="btn line" style={{ marginTop: 12 }} onClick={finishTalking}>Done — show me the answer</button>
           </div>
         )}
 
         {phase === "check" && (
           <div style={{ marginTop: 16 }}>
             <span className="eyebrow">You spoke for {mm}:{ss} · target {target}s</span>
-            {card.answer
-              ? <div className="item-ans" style={{ fontSize: 16 }}>{card.answer}</div>
-              : <p className="hint">No answer notes saved for this one. Write them while it's fresh — Bank lets you edit.</p>}
-            <span className="eyebrow" style={{ marginTop: 18 }}>How did that go?</span>
+
+            {scoring && <div className="alert ml"><b>Checking what you covered</b>Comparing your answer against each beat…</div>}
+
+            {results && (
+              <>
+                <div className="alert" style={{
+                  background: sug.ratio >= 0.6 ? "#EAF6F1" : "#FDF6E7",
+                  border: "1px solid " + (sug.ratio >= 0.6 ? "#BFE0D3" : "#EBD9A8"),
+                  color: sug.ratio >= 0.6 ? "#08503B" : "#6B4A02",
+                }}>
+                  <b>You covered {results.filter((r) => r.state === "hit").length} of {results.length} beats.</b>
+                  {results.some((r) => r.state === "miss")
+                    ? "Missed: " + results.filter((r) => r.state === "miss").length + ". Read them below, then answer it again tomorrow."
+                    : "Nothing skipped."}
+                </div>
+                <span className="eyebrow" style={{ marginTop: 16 }}>Beat by beat</span>
+                {results.map((r, i) => (
+                  <div className={"beat" + (r.state === "miss" ? " miss" : "")} key={i}>
+                    <div className="beat-mark" style={{ color: r.state === "hit" ? "var(--clear)" : r.state === "part" ? "var(--warn)" : "var(--collide)" }}>
+                      {r.state === "hit" ? "✓" : r.state === "part" ? "~" : "✗"}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div className="beat-txt">{r.beat}</div>
+                      <div className="beat-score">{r.state === "hit" ? "covered" : r.state === "part" ? "touched on" : "not mentioned"} · {Math.round(r.score * 100)}%</div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {!results && !scoring && (card.answer
+              ? <div className="item-ans" style={{ fontSize: 16, whiteSpace: "pre-line" }}>{card.answer}</div>
+              : <p className="hint">No answer notes saved for this one. Add them from the Bank tab while it's fresh — then review can grade you properly.</p>)}
+
+            <span className="eyebrow" style={{ marginTop: 18 }}>
+              How did that go?{sug && <span style={{ textTransform: "none", letterSpacing: 0 }}> — coverage suggests {GRADES[sug.grade - 1].name.toLowerCase()}</span>}
+            </span>
             <div className="grade">
-              <button onClick={() => grade("again")}><b>Blanked</b><small>back in 10 min</small></button>
-              <button onClick={() => grade("hard")}><b>Shaky</b><small>same box</small></button>
-              <button onClick={() => grade("good")}><b>Solid</b><small>+{INTERVALS[Math.min(card.box + 1, 5)]}d</small></button>
-              <button onClick={() => grade("easy")}><b>Fluent</b><small>+{INTERVALS[Math.min(card.box + 2, 5)]}d</small></button>
+              {GRADES.map(({ g, name }) => (
+                <button key={g} className={sug && sug.grade === g ? "rec" : ""} onClick={() => grade(g)}>
+                  <b>{name}</b>
+                  <small>{previewDays(card, g, settings.retention)}</small>
+                </button>
+              ))}
             </div>
+            <p className="hint">Intervals come from FSRS, fitted to this card's own stability and difficulty — not a fixed ladder.</p>
           </div>
         )}
       </div>
@@ -901,30 +1475,39 @@ function ReviewView({ data, commit, goAdd }) {
   );
 }
 
-/* ========================== COVERAGE ========================== */
+/* ============================= COVERAGE ================================ */
+function CoverageView({ ctx, onGap }) {
+  const { questions, concepts, vecs, mlReady } = ctx;
+  const [clusters, setClusters] = useState(null);
 
-function CoverageView({ data, onGap }) {
-  const rows = useMemo(() => {
-    return data.concepts
-      .map((c) => {
-        const qs = data.questions.filter((q) => q.conceptId === c.id && !q.variantOf);
-        const byAngle = {};
-        qs.forEach((q) => {
-          byAngle[q.angle] = byAngle[q.angle] || [];
-          byAngle[q.angle].push(q);
-        });
-        const covered = Object.keys(byAngle).length;
-        const strength = qs.length ? qs.reduce((s, q) => s + q.box, 0) / qs.length : 0;
-        return { c, qs, byAngle, covered, strength };
-      })
-      .sort((a, b) => a.covered - b.covered || b.qs.length - a.qs.length);
-  }, [data]);
+  const rows = useMemo(() => concepts.map((c) => {
+    const qs = questions.filter((q) => q.conceptId === c.id && !q.variantOf);
+    const byAngle = {};
+    qs.forEach((q) => { (byAngle[q.angle] = byAngle[q.angle] || []).push(q); });
+    const covered = Object.keys(byAngle).length;
+    const stab = qs.length ? qs.reduce((s, q) => s + (q.stability || 0), 0) / qs.length : 0;
+    return { c, qs, byAngle, covered, stab };
+  }).sort((a, b) => a.covered - b.covered || b.qs.length - a.qs.length), [questions, concepts]);
 
-  const unfiled = data.questions.filter((q) => !q.conceptId).length;
-  const totalCells = data.concepts.length * ANGLES.length;
+  /* near-duplicate sweep across the whole bank, only possible with vectors */
+  useEffect(() => {
+    if (!mlReady) { setClusters(null); return; }
+    const list = questions.filter((q) => !q.variantOf && vecs.get(q.id));
+    const pairs = [];
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const s = blend(lexScore(list[i].text, list[j].text), semScore(cosine(vecs.get(list[i].id), vecs.get(list[j].id)))).score;
+        if (s >= 72) pairs.push({ a: list[i], b: list[j], s });
+      }
+    }
+    setClusters(pairs.sort((x, y) => y.s - x.s).slice(0, 5));
+  }, [questions, vecs, mlReady]);
+
+  const unfiled = questions.filter((q) => !q.conceptId).length;
+  const totalCells = concepts.length * ANGLES.length;
   const filled = rows.reduce((s, r) => s + r.covered, 0);
 
-  if (!data.concepts.length) {
+  if (!concepts.length) {
     return <div className="card"><div className="empty">
       <h3>Coverage needs concepts.</h3>
       <p>Tag your questions with a concept and this becomes a map of what you can and can't talk about.</p>
@@ -935,95 +1518,111 @@ function CoverageView({ data, onGap }) {
     <>
       <div className="stat-row">
         <div className="stat"><b>{filled}<span style={{ fontSize: 13, color: "var(--soft)" }}>/{totalCells}</span></b><small>angles covered</small></div>
-        <div className="stat"><b>{data.questions.filter((q) => q.box >= 3).length}</b><small>held firmly</small></div>
+        <div className="stat"><b>{questions.filter((q) => (q.stability || 0) >= 21).length}</b><small>held durably</small></div>
         <div className="stat"><b>{rows.filter((r) => r.covered <= 2).length}</b><small>thin concepts</small></div>
       </div>
 
       <div className="card">
         <span className="eyebrow">Weakest concepts first · tap an empty cell to write that question</span>
-        {rows.map(({ c, qs, byAngle, covered, strength }) => (
+        {rows.map(({ c, qs, byAngle, covered, stab }) => (
           <div className="cov" key={c.id}>
             <div className="cov-name">
               {c.name}
-              <small>{qs.length} question{qs.length === 1 ? "" : "s"} · {covered}/6 angles{strength >= 2.5 ? " · strong recall" : ""}</small>
+              <small>{qs.length} question{qs.length === 1 ? "" : "s"} · {covered}/6 angles{stab >= 21 ? " · durable" : stab >= 7 ? " · settling" : ""}</small>
             </div>
             <div className="cells">
               {ANGLES.map((a) => {
                 const list = byAngle[a.id] || [];
-                const avg = list.length ? list.reduce((s, q) => s + q.box, 0) / list.length : 0;
-                const cls = !list.length ? "cell" : avg >= 3 ? "cell strong" : "cell has";
+                const avg = list.length ? list.reduce((s, q) => s + (q.stability || 0), 0) / list.length : 0;
+                const cls = !list.length ? "cell" : avg >= 21 ? "cell strong" : "cell has";
                 return (
-                  <button
-                    key={a.id} className={cls}
+                  <button key={a.id} className={cls}
                     title={a.name + (list.length ? " · " + list.length + " question(s)" : " · not asked yet")}
                     aria-label={c.name + ", " + a.name + ", " + (list.length ? list.length + " questions" : "empty")}
-                    onClick={() => !list.length && onGap({ conceptId: c.id, angle: a.id, text: "" })}
-                  >{a.short}</button>
+                    onClick={() => !list.length && onGap({ conceptId: c.id, angle: a.id, text: "" })}>{a.short}</button>
                 );
               })}
             </div>
           </div>
         ))}
-        <div className="legend">
-          {ANGLES.map((a) => <span key={a.id}>{a.short} — {a.name}</span>)}
-        </div>
+        <div className="legend">{ANGLES.map((a) => <span key={a.id}>{a.short} — {a.name}</span>)}</div>
         <p className="note" style={{ marginTop: 14 }}>
-          <b>Dark</b> means asked. <b>Green</b> means you've recalled it correctly at least three times running.
+          <b>Dark</b> means asked. <b>Green</b> means FSRS puts it three weeks or more from being forgotten.
           {unfiled > 0 && " " + unfiled + " question" + (unfiled === 1 ? " has" : "s have") + " no concept and sit outside this map."}
         </p>
       </div>
+
+      {mlReady && clusters && clusters.length > 0 && (
+        <div className="card">
+          <span className="eyebrow">Possible duplicates already in the bank</span>
+          <p className="note" style={{ marginTop: 0 }}>Found by comparing every pair by meaning. These slipped in before semantic matching was on.</p>
+          {clusters.map((p, i) => (
+            <div className="item" key={i}>
+              <div className="near-meta" style={{ color: BAND_COLOR[band(p.s)] }}>{p.s}% match</div>
+              <div className="item-q" style={{ fontSize: 15 }}>{p.a.text}</div>
+              <div className="item-q" style={{ fontSize: 15, marginTop: 6, color: "var(--soft)" }}>{p.b.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }
 
-/* ============================ BANK ============================ */
-
-function BankView({ data, commit, goAdd }) {
+/* =============================== BANK ================================== */
+function BankView({ ctx, goAdd, seed }) {
+  const { questions, concepts, vecs, mlReady, putQ, dropQ, putVec } = ctx;
   const [q, setQ] = useState("");
+  const [qVec, setQVec] = useState(null);
   const [conceptFilter, setConceptFilter] = useState("all");
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState("");
-  const [confirmReset, setConfirmReset] = useState(false);
+
+  useEffect(() => {
+    let dead = false;
+    if (!mlReady || q.trim().length < 4) { setQVec(null); return; }
+    const t = setTimeout(() => { ML.embed(q).then((v) => { if (!dead) setQVec(v); }).catch(() => {}); }, 250);
+    return () => { dead = true; clearTimeout(t); };
+  }, [q, mlReady]);
 
   const list = useMemo(() => {
-    let out = data.questions.filter((x) => !x.variantOf);
+    let out = questions.filter((x) => !x.variantOf);
     if (conceptFilter !== "all") out = out.filter((x) => (conceptFilter === "none" ? !x.conceptId : x.conceptId === conceptFilter));
     if (q.trim()) {
-      out = out
-        .map((x) => ({ x, s: similarity(q, x.text) }))
-        .filter((r) => r.s >= 20 || norm(r.x.text).includes(norm(q)))
-        .sort((a, b) => b.s - a.s)
-        .map((r) => r.x);
-    } else {
-      out = [...out].sort((a, b) => b.created - a.created);
-    }
+      out = out.map((x) => {
+        const lex = lexScore(q, x.text);
+        let sem = null;
+        if (qVec) { const v = vecs.get(x.id); if (v) sem = semScore(cosine(qVec, v)); }
+        return { x, s: blend(lex, sem).score };
+      }).filter((r) => r.s >= 25 || norm(r.x.text).includes(norm(q)))
+        .sort((a, b) => b.s - a.s).map((r) => r.x);
+    } else out = [...out].sort((a, b) => b.created - a.created);
     return out;
-  }, [data.questions, q, conceptFilter]);
+  }, [questions, q, conceptFilter, qVec, vecs]);
 
-  function remove(id) {
-    commit({ ...data, questions: data.questions.filter((x) => x.id !== id && x.variantOf !== id) });
-  }
-  function saveAnswer(id) {
-    commit({ ...data, questions: data.questions.map((x) => (x.id === id ? { ...x, answer: draft.trim() } : x)) });
+  async function saveAnswer(item) {
+    await putQ({ ...item, answer: draft.trim() });
     setEditing(null);
   }
 
-  if (!data.questions.length) {
+  if (!questions.length) {
     return <div className="card"><div className="empty">
       <h3>The bank is empty.</h3>
-      <p>Everything you add shows up here, with its concept, angle, and how firmly you're holding it.</p>
-      <button className="btn" onClick={goAdd}>Add the first question</button>
+      <p>Load ten real questions across five concepts, then try typing a paraphrase — the gauge will catch it.</p>
+      <button className="btn" onClick={seed}>Load the starter set</button>
+      <p style={{ marginTop: 14, marginBottom: 0, fontSize: 12.5 }}>Or <button className="btn tiny line" onClick={goAdd}>add your own</button></p>
     </div></div>;
   }
 
   return (
     <>
       <div className="card">
-        <input className="t" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the bank — fuzzy, so near-misses show up too" />
+        <input className="t" value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder={mlReady ? "Search by meaning — synonyms count" : "Search — fuzzy, so near-misses show up"} />
         <div className="field">
           <select className="t" value={conceptFilter} onChange={(e) => setConceptFilter(e.target.value)}>
             <option value="all">All concepts</option>
-            {data.concepts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {concepts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             <option value="none">Unfiled</option>
           </select>
         </div>
@@ -1033,54 +1632,182 @@ function BankView({ data, commit, goAdd }) {
         <span className="eyebrow">{list.length} question{list.length === 1 ? "" : "s"}</span>
         {list.length === 0 && <p className="note">Nothing matches. Clear the search, or add it — the gauge will confirm it's new.</p>}
         {list.map((item) => {
-          const c = data.concepts.find((x) => x.id === item.conceptId);
-          const variants = data.questions.filter((v) => v.variantOf === item.id);
+          const c = concepts.find((x) => x.id === item.conceptId);
+          const variants = questions.filter((v) => v.variantOf === item.id);
           return (
             <div className="item" key={item.id}>
               <div className="item-q">{item.text}</div>
               <div className="item-meta">
                 <span>{c ? c.name : "unfiled"}</span><span className="dot" />
                 <span>{angleName(item.angle)}</span><span className="dot" />
-                <span>box {item.box + 1}/6</span><span className="dot" />
+                <span>{strengthOf(item)}{item.stability ? " · " + Math.round(item.stability) + "d" : ""}</span><span className="dot" />
                 <span>{fmtDue(item)}</span>
                 {item.lapses > 0 && <><span className="dot" /><span style={{ color: "var(--collide)" }}>{item.lapses} blank{item.lapses === 1 ? "" : "s"}</span></>}
               </div>
-              {item.answer && editing !== item.id && <div className="item-ans">{item.answer}</div>}
+              {item.answer && editing !== item.id && <div className="item-ans" style={{ whiteSpace: "pre-line" }}>{item.answer}</div>}
               {editing === item.id ? (
                 <>
-                  <textarea className="q sm" style={{ marginTop: 10 }} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Beats a strong answer hits…" />
+                  <textarea className="q sm" style={{ marginTop: 10 }} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="One beat per line…" />
                   <div className="row" style={{ marginTop: 8 }}>
-                    <button className="btn tiny" onClick={() => saveAnswer(item.id)}>Save notes</button>
+                    <button className="btn tiny" onClick={() => saveAnswer(item)}>Save notes</button>
                     <button className="btn tiny line" onClick={() => setEditing(null)}>Cancel</button>
                   </div>
                 </>
               ) : (
                 <div className="row" style={{ marginTop: 10 }}>
-                  <button className="btn tiny line" onClick={() => { setEditing(item.id); setDraft(item.answer || ""); }}>
-                    {item.answer ? "Edit notes" : "Add notes"}
-                  </button>
-                  <button className="btn tiny line" onClick={() => remove(item.id)}>Delete</button>
+                  <button className="btn tiny line" onClick={() => { setEditing(item.id); setDraft(item.answer || ""); }}>{item.answer ? "Edit notes" : "Add notes"}</button>
+                  <button className="btn tiny line" onClick={() => dropQ(item.id)}>Delete</button>
                 </div>
               )}
               {variants.map((v) => (
                 <div className="variant" key={v.id} style={{ marginTop: 10 }}>
                   <div className="near-meta">variant</div>
                   <div className="item-q" style={{ fontSize: 15 }}>{v.text}</div>
-                  <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => remove(v.id)}>Delete variant</button>
+                  <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => dropQ(v.id)}>Delete variant</button>
                 </div>
               ))}
             </div>
           );
         })}
       </div>
+    </>
+  );
+}
+
+/* =============================== DATA ================================== */
+function DataView({ ctx, mlState, backfill, enableML, setAll }) {
+  const { questions, concepts, settings, vecs, putSettings } = ctx;
+  const [msg, setMsg] = useState(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [usage, setUsage] = useState(null);
+  const [reviewCount, setReviewCount] = useState(null);
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then((e) => setUsage(e)).catch(() => {});
+    Repo.allReviews().then((r) => setReviewCount(r.length)).catch(() => {});
+  }, [questions]);
+
+  async function doExport() {
+    const reviews = await Repo.allReviews().catch(() => []);
+    const text = buildExport({ questions, concepts, settings }, reviews);
+    const r = await saveExport(text);
+    if (r.ok) setMsg({ k: "ok", t: "Backup written", b: r.how === "picker" ? "Saved as " + r.name + " where you chose." : "Downloaded as " + r.name + ". Vectors are left out — they rebuild in seconds." });
+    else setMsg({ k: "warn", t: "Cancelled", b: "Nothing was written." });
+  }
+
+  async function doImport(file) {
+    try {
+      const text = await file.text();
+      const incoming = JSON.parse(text);
+      if (incoming.format !== "thebank") throw new Error("not a Bank backup");
+      const { data, report } = mergeImport({ questions, concepts }, incoming);
+      await Repo.saveQuestions(data.questions);
+      await Repo.saveConcepts(data.concepts);
+      setAll(data.questions, data.concepts);
+      setMsg({ k: "ok", t: "Merged", b: report.added + " added, " + report.updated + " updated, " + report.skipped + " skipped as already here, " + report.newConcepts + " new concepts. Nothing was deleted." });
+    } catch (e) {
+      setMsg({ k: "warn", t: "Couldn't read that file", b: (e && e.message) || "Pick a .json backup exported from The Bank." });
+    }
+  }
+
+  const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+
+  return (
+    <>
+      {msg && <div className={"alert " + (msg.k === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}><b>{msg.t}</b>{msg.b}</div>}
+
+      <div className="card">
+        <span className="eyebrow">Semantic matching</span>
+        {mlState.state === "ready" ? (
+          <>
+            <div className="alert ml" style={{ marginTop: 0 }}>
+              <b>On — {vecs.size} of {questions.length} questions indexed</b>
+              The gauge now blends meaning (60%) with wording (40%), so a paraphrase with no shared words still trips it.
+              Angles and concepts are auto-tagged from the same vectors.
+            </div>
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="btn tiny line" onClick={() => putSettings({ mlEnabled: false })}>Don't load it next time</button>
+            </div>
+          </>
+        ) : mlState.state === "loading" || backfill ? (
+          <div className="alert ml" style={{ marginTop: 0 }}>
+            <b>{backfill ? "Indexing your questions" : "Downloading the model"}</b>
+            {backfill ? backfill.done + " of " + backfill.total : "all-MiniLM-L6-v2, about 23 MB, cached after this"}
+            <div className="bar"><i style={{ width: (backfill ? Math.round((backfill.done / backfill.total) * 100) : mlState.progress) + "%" }} /></div>
+          </div>
+        ) : (
+          <>
+            <p className="note" style={{ marginTop: 0 }}>
+              Right now duplicates are caught by wording alone. <b>"What is the event loop?"</b> and
+              <b> "How does JavaScript handle async work under the hood?"</b> share no words, so they both get in.
+            </p>
+            <p className="note">
+              Turning this on downloads a 23 MB sentence-embedding model that runs entirely in this browser.
+              Nothing is uploaded, there's no API key, and it's cached after the first visit.
+            </p>
+            {mlState.state === "failed" && (
+              <div className="alert warn"><b>Last attempt failed</b>{mlState.error}. Everything still works on wording alone.</div>
+            )}
+            <button className="btn violet" style={{ marginTop: 12 }} onClick={enableML}>Turn on semantic matching</button>
+          </>
+        )}
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Scheduling</span>
+        <div className="field">
+          <label className="hint" style={{ marginTop: 0 }} htmlFor="ret">Target retention — how much you're willing to forget</label>
+          <select id="ret" className="t" value={String(settings.retention)} onChange={(e) => putSettings({ retention: parseFloat(e.target.value) })}>
+            <option value="0.85">85% — fewer reviews, more slips</option>
+            <option value="0.9">90% — the default balance</option>
+            <option value="0.95">95% — interview next week</option>
+          </select>
+        </div>
+        <div className="field">
+          <label className="hint" style={{ marginTop: 0 }} htmlFor="tt">Spoken answer target</label>
+          <select id="tt" className="t" value={String(settings.talkTarget)} onChange={(e) => putSettings({ talkTarget: parseInt(e.target.value, 10) })}>
+            <option value="60">60 seconds — screening round</option>
+            <option value="90">90 seconds — the default</option>
+            <option value="150">150 seconds — system design</option>
+          </select>
+        </div>
+        <p className="note">FSRS tracks a stability and a difficulty per question and fits the interval to your own grades, so raising retention shortens every gap at once.</p>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Where your data lives</span>
+        <div className="kv"><span>Store</span><b>IndexedDB · {DB_NAME}</b></div>
+        <div className="kv"><span>Questions</span><b>{questions.length}</b></div>
+        <div className="kv"><span>Concepts</span><b>{concepts.length}</b></div>
+        <div className="kv"><span>Vectors</span><b>{vecs.size} × 384 floats</b></div>
+        <div className="kv"><span>Review log</span><b>{reviewCount === null ? "…" : reviewCount + " entries"}</b></div>
+        {usage && <div className="kv"><span>Origin usage</span><b>{mb(usage.usage || 0)} of {mb(usage.quota || 0)}</b></div>}
+        <p className="note">All of it is local to this browser. Nothing leaves the device, and there is no account.</p>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Backup and transfer</span>
+        <p className="note" style={{ marginTop: 0 }}>
+          One JSON file with every question, concept, and review. Vectors are excluded — they're derived data
+          that rebuilds in seconds, and including them would triple the file.
+        </p>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn" onClick={doExport}>Export a backup</button>
+          <button className="btn line" onClick={() => fileRef.current && fileRef.current.click()}>Import a backup</button>
+        </div>
+        <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: "none" }}
+          onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) doImport(f); e.target.value = ""; }} />
+        <p className="hint">Import merges by id, newest wins, and refuses text duplicates. It never deletes anything you already have — that's how you move between phone and laptop.</p>
+      </div>
 
       <div className="card">
         <span className="eyebrow">Start over</span>
         {confirmReset ? (
           <>
-            <p className="note" style={{ marginTop: 0 }}>This deletes every question, concept, and review score on this device. It can't be undone.</p>
+            <p className="note" style={{ marginTop: 0 }}>This deletes every question, concept, vector, and review score in this browser. Export first if you want them back.</p>
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn danger" onClick={() => { commit(EMPTY); setConfirmReset(false); }}>Delete everything</button>
+              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], []); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "The bank is empty." }); }}>Delete everything</button>
               <button className="btn line" onClick={() => setConfirmReset(false)}>Keep it</button>
             </div>
           </>
@@ -1091,7 +1818,6 @@ function BankView({ data, commit, goAdd }) {
     </>
   );
 }
-
 
 ReactDOM.createRoot(document.getElementById("root")).render(<QuestionBank />);
 </script>
