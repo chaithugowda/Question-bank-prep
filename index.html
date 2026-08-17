@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>The Bank — interview question bank</title>
+<meta name="description" content="An interview question bank that refuses duplicates, maps your blind spots by angle, and drills you out loud on a spacing schedule." />
+<meta name="theme-color" content="#E7EAF0" />
+<style>
+  html,body{margin:0;padding:0;background:#E7EAF0;}
+  #root{min-height:100vh;}
+  #boot{font:14px/1.5 system-ui,sans-serif;color:#5C6478;padding:40px 20px;text-align:center;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"><div id="boot">Loading The Bank…</div></div>
+
+<script>
+/* Storage shim: inside Claude artifacts window.storage already exists.
+   Hosted anywhere else (GitHub Pages, local file), fall back to localStorage
+   so the bank survives a refresh. Same async contract either way. */
+if (!window.storage) {
+  window.storage = {
+    get: async function (k) {
+      var v = localStorage.getItem(k);
+      if (v === null) throw new Error("key not found: " + k);
+      return { key: k, value: v, shared: false };
+    },
+    set: async function (k, v) { localStorage.setItem(k, v); return { key: k, value: v, shared: false }; },
+    delete: async function (k) { localStorage.removeItem(k); return { key: k, deleted: true, shared: false }; },
+    list: async function (p) {
+      p = p || "";
+      var keys = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        if (key.indexOf(p) === 0) keys.push(key);
+      }
+      return { keys: keys, prefix: p, shared: false };
+    }
+  };
+}
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ============================================================
+   THE BANK — an interview question bank that refuses duplicates
+   ------------------------------------------------------------
+   Signature: the Collision Gauge. Every keystroke is measured
+   against the whole bank and reported as a live match score.
+   Learning model: 6 angles x spaced repetition, answered aloud.
+   ============================================================ */
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Newsreader:opsz,wght@6..72,400;6..72,600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+.qb {
+  --paper:#E7EAF0; --card:#FFFFFF; --ink:#141A26; --soft:#5C6478;
+  --rule:#D2D8E4; --indigo:#2D3BD4; --clear:#0C7F5C; --warn:#A96B04;
+  --collide:#C42B41; --gold:#B48A16;
+  --grotesk:'Space Grotesk',Futura,'Trebuchet MS',sans-serif;
+  --serif:'Newsreader',Georgia,'Iowan Old Style',serif;
+  --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  background:var(--paper); color:var(--ink); font-family:var(--grotesk);
+  min-height:100vh; padding:0 0 96px; -webkit-font-smoothing:antialiased;
+}
+.qb *{box-sizing:border-box;}
+.qb button{font-family:var(--grotesk); cursor:pointer;}
+.qb :focus-visible{outline:2px solid var(--indigo); outline-offset:2px;}
+
+.wrap{max-width:760px; margin:0 auto; padding:0 18px;}
+
+/* masthead */
+.mast{padding:26px 0 14px;}
+.mast h1{font-size:26px; font-weight:700; letter-spacing:-.03em; margin:0; line-height:1;}
+.mast h1 em{font-style:normal; color:var(--indigo);}
+.mast p{font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--soft); margin:9px 0 0;}
+
+/* tabs */
+.tabs{display:flex; gap:4px; background:var(--card); border:1px solid var(--rule);
+  border-radius:11px; padding:4px; margin:6px 0 20px;}
+.tabs button{flex:1; border:0; background:transparent; color:var(--soft); font-size:12.5px;
+  font-weight:500; padding:9px 4px; border-radius:8px; letter-spacing:.01em;}
+.tabs button.on{background:var(--ink); color:#fff;}
+.tabs .badge{font-family:var(--mono); font-size:10px; margin-left:5px; opacity:.75;}
+
+.card{background:var(--card); border:1px solid var(--rule); border-radius:14px; padding:18px;}
+.card + .card{margin-top:14px;}
+
+.eyebrow{font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--soft); display:block; margin-bottom:9px;}
+
+textarea.q, input.t{width:100%; border:1px solid var(--rule); border-radius:10px; background:#FBFCFD;
+  padding:12px 13px; font-family:var(--serif); font-size:17.5px; color:var(--ink); resize:vertical;}
+input.t{font-family:var(--grotesk); font-size:14.5px;}
+textarea.q{min-height:88px; line-height:1.45;}
+textarea.q:focus, input.t:focus{background:#fff; border-color:var(--indigo);}
+textarea.q::placeholder, input.t::placeholder{color:#9AA1B2;}
+textarea.sm{min-height:66px; font-size:15px;}
+
+/* ---- collision gauge (signature) ---- */
+.gauge{margin-top:14px;}
+.gauge-top{display:flex; align-items:flex-end; justify-content:space-between; gap:12px;}
+.gauge-num{font-size:44px; font-weight:700; letter-spacing:-.04em; line-height:.85;
+  font-variant-numeric:tabular-nums;}
+.gauge-num span{font-size:16px; font-weight:500; letter-spacing:0;}
+.gauge-verdict{text-align:right;}
+.gauge-verdict b{display:block; font-size:13px; letter-spacing:-.01em;}
+.gauge-verdict small{font-family:var(--mono); font-size:10px; color:var(--soft);
+  letter-spacing:.06em; text-transform:uppercase;}
+.ticks{display:flex; gap:2px; margin-top:11px;}
+.ticks i{flex:1; height:12px; border-radius:2px; background:#DFE3EB;
+  transition:background .18s ease, transform .18s ease;}
+.ticks i.lit{transform:scaleY(1.34);}
+.ticks-scale{display:flex; justify-content:space-between; font-family:var(--mono); font-size:9.5px;
+  color:var(--soft); letter-spacing:.08em; margin-top:6px;}
+
+/* nearest matches */
+.near{margin-top:14px; border-top:1px dashed var(--rule); padding-top:12px;}
+.near-row{display:flex; gap:11px; align-items:baseline; padding:8px 0;}
+.near-row + .near-row{border-top:1px solid #EEF0F5;}
+.pct{font-family:var(--mono); font-size:12px; font-weight:500; min-width:38px;
+  font-variant-numeric:tabular-nums;}
+.near-q{font-family:var(--serif); font-size:15px; line-height:1.38; flex:1;}
+.near-meta{font-family:var(--mono); font-size:9.5px; color:var(--soft); text-transform:uppercase;
+  letter-spacing:.1em; margin-top:3px;}
+
+/* chips */
+.chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:9px;}
+.chip{border:1px solid var(--rule); background:#F4F6F9; color:var(--ink); border-radius:99px;
+  padding:6px 11px; font-size:12.5px; font-weight:500;}
+.chip.on{background:var(--ink); color:#fff; border-color:var(--ink);}
+.chip.ghost{background:transparent; border-style:dashed; color:var(--soft);}
+.chip .x{opacity:.55; margin-left:6px;}
+
+/* buttons */
+.btn{border:1px solid var(--ink); background:var(--ink); color:#fff; border-radius:10px;
+  padding:12px 16px; font-size:14px; font-weight:500; width:100%;}
+.btn[disabled]{opacity:.34; cursor:not-allowed;}
+.btn.line{background:transparent; color:var(--ink);}
+.btn.danger{background:var(--collide); border-color:var(--collide);}
+.btn.tiny{width:auto; padding:7px 12px; font-size:12.5px; border-radius:8px;}
+.row{display:flex; gap:8px;}
+
+.note{font-size:13px; line-height:1.5; color:var(--soft); margin:10px 0 0;}
+.note b{color:var(--ink);}
+.alert{border-radius:10px; padding:11px 13px; font-size:13.5px; line-height:1.45; margin-top:12px;}
+.alert.warn{background:#FDF6E7; border:1px solid #EBD9A8; color:#6B4A02;}
+.alert.stop{background:#FCEDEF; border:1px solid #F0C6CD; color:#8C1526;}
+.alert.ok{background:#EAF6F1; border:1px solid #BFE0D3; color:#08503B;}
+.alert b{display:block; margin-bottom:3px;}
+
+/* bank list */
+.item{border-top:1px solid var(--rule); padding:15px 0;}
+.item:first-child{border-top:0;}
+.item-q{font-family:var(--serif); font-size:17px; line-height:1.4;}
+.item-meta{display:flex; flex-wrap:wrap; gap:9px; align-items:center; margin-top:8px;
+  font-family:var(--mono); font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--soft);}
+.dot{width:5px; height:5px; border-radius:99px; background:var(--rule); display:inline-block;}
+.item-ans{font-family:var(--serif); font-size:15px; line-height:1.5; color:var(--soft);
+  margin-top:9px; padding-left:11px; border-left:2px solid var(--rule);}
+.variant{margin-left:14px; padding-left:12px; border-left:2px solid var(--indigo);}
+
+/* review */
+.rev-q{font-family:var(--serif); font-size:23px; line-height:1.32; letter-spacing:-.01em;}
+.timer{font-family:var(--mono); font-size:34px; font-weight:500; font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em;}
+.timer-bar{height:4px; background:#DFE3EB; border-radius:99px; overflow:hidden; margin-top:10px;}
+.timer-bar i{display:block; height:100%; background:var(--indigo); border-radius:99px;
+  transition:width .9s linear;}
+.grade{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;}
+.grade button{border:1px solid var(--rule); background:#fff; border-radius:10px; padding:12px 8px;
+  text-align:left;}
+.grade b{display:block; font-size:13.5px;}
+.grade small{font-family:var(--mono); font-size:9.5px; color:var(--soft); letter-spacing:.07em;
+  text-transform:uppercase;}
+
+/* coverage grid */
+.cov{display:flex; align-items:center; gap:10px; padding:11px 0; border-top:1px solid var(--rule);}
+.cov:first-of-type{border-top:0;}
+.cov-name{flex:1; font-size:14px; font-weight:500; letter-spacing:-.01em; min-width:0;}
+.cov-name small{display:block; font-family:var(--mono); font-size:9.5px; color:var(--soft);
+  letter-spacing:.08em; text-transform:uppercase; font-weight:400; margin-top:2px;}
+.cells{display:flex; gap:3px;}
+.cell{width:26px; height:26px; border-radius:6px; border:1px solid var(--rule); background:#F3F5F9;
+  font-family:var(--mono); font-size:10px; color:var(--soft); display:flex; align-items:center;
+  justify-content:center; padding:0;}
+.cell.has{background:var(--ink); border-color:var(--ink); color:#fff;}
+.cell.strong{background:var(--clear); border-color:var(--clear); color:#fff;}
+.legend{display:flex; flex-wrap:wrap; gap:12px; margin-top:14px; font-family:var(--mono);
+  font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--soft);}
+
+.stat-row{display:flex; gap:8px; margin-bottom:14px;}
+.stat{flex:1; background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:12px;}
+.stat b{display:block; font-size:24px; font-weight:700; letter-spacing:-.03em; line-height:1;
+  font-variant-numeric:tabular-nums;}
+.stat small{font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--soft); display:block; margin-top:6px;}
+
+.empty{text-align:center; padding:34px 14px;}
+.empty h3{font-family:var(--serif); font-size:21px; font-weight:600; margin:0 0 7px;}
+.empty p{font-size:14px; color:var(--soft); line-height:1.5; margin:0 auto 16px; max-width:330px;}
+
+.field + .field{margin-top:15px;}
+.hint{font-size:12px; color:var(--soft); margin-top:6px; line-height:1.45;}
+select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:11px 12px;
+  font-size:14px; background:#FBFCFD; font-family:var(--grotesk); color:var(--ink);}
+
+@media (prefers-reduced-motion: reduce){ .qb *{transition:none !important;} }
+@media (max-width:420px){ .cell{width:22px; height:22px;} .mast h1{font-size:23px;} }
+`;
+
+/* ---------- text similarity ---------- */
+const STOP = new Set(("a an the is are was were be been being am do does did doing you your yours my mine i we our us it its of to in on at for with and or as that this these those from by can could would should will shall may might what why how when which who whom whose please tell about explain describe give any some there their they them he she").split(" "));
+
+const stem = (w) => {
+  if (w.length <= 4) return w;
+  if (w.endsWith("ies")) return w.slice(0, -3) + "y";
+  if (w.endsWith("ing")) return w.slice(0, -3);
+  if (w.endsWith("ed")) return w.slice(0, -2);
+  if (w.endsWith("es")) return w.slice(0, -2);
+  if (w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+  return w;
+};
+
+const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+
+const toks = (s) => {
+  const set = new Set();
+  norm(s).split(" ").forEach((w) => { if (w && !STOP.has(w)) set.add(stem(w)); });
+  return set;
+};
+
+const trigrams = (s) => {
+  const t = " " + norm(s).replace(/\s+/g, " ") + " ";
+  const set = new Set();
+  for (let i = 0; i < t.length - 2; i++) set.add(t.slice(i, i + 3));
+  return set;
+};
+
+const dice = (a, b) => {
+  if (!a.size || !b.size) return 0;
+  let hit = 0;
+  a.forEach((x) => { if (b.has(x)) hit++; });
+  return (2 * hit) / (a.size + b.size);
+};
+
+const jaccard = (a, b) => {
+  if (!a.size || !b.size) return 0;
+  let hit = 0;
+  a.forEach((x) => { if (b.has(x)) hit++; });
+  return hit / (a.size + b.size - hit);
+};
+
+/** 0–100 match score between two question strings. */
+function similarity(a, b) {
+  const ta = toks(a), tb = toks(b);
+  if (ta.size && tb.size && ta.size === tb.size) {
+    let same = true;
+    ta.forEach((x) => { if (!tb.has(x)) same = false; });
+    if (same) return 100;
+  }
+  const s = 0.55 * dice(trigrams(a), trigrams(b)) + 0.45 * jaccard(ta, tb);
+  return Math.round(Math.min(100, s * 118));
+}
+
+const band = (n) => (n >= 82 ? "collide" : n >= 62 ? "near" : n >= 40 ? "echo" : "clear");
+const BAND_COLOR = { collide: "var(--collide)", near: "var(--warn)", echo: "var(--gold)", clear: "var(--clear)" };
+const BAND_TEXT = {
+  collide: ["Already in the bank", "blocked"],
+  near: ["Very close to an existing question", "check before saving"],
+  echo: ["Some overlap", "probably a different angle"],
+  clear: ["Nothing like it yet", "clear to save"],
+};
+
+/* ---------- the six angles ---------- */
+const ANGLES = [
+  { id: "def", short: "D", name: "Definition", probe: "What is it, precisely?" },
+  { id: "trade", short: "T", name: "Trade-offs", probe: "When would you not use it?" },
+  { id: "fail", short: "F", name: "Failure mode", probe: "What breaks, and how does it look?" },
+  { id: "story", short: "S", name: "Hands-on story", probe: "A time you actually used it." },
+  { id: "debug", short: "B", name: "Debugging", probe: "It's slow or wrong — now what?" },
+  { id: "scale", short: "L", name: "Scale & limits", probe: "What happens at 100x?" },
+];
+const angleName = (id) => (ANGLES.find((a) => a.id === id) || ANGLES[0]).name;
+
+function guessAngle(q) {
+  const s = norm(q);
+  if (/\b(tell me about a time|time (you|when)|describe a (time|situation)|walk me through a project|have you ever)\b/.test(s)) return "story";
+  if (/\b(debug|debugging|troubleshoot|slow|slower|regress|root cause|investigate|find out why|diagnose)\b/.test(s)) return "debug";
+  if (/\b(scale|scaling|10x|100x|million|throughput|traffic|load|bottleneck|capacity|shard)\b/.test(s)) return "scale";
+  if (/\b(fail|fails|failure|breaks|break|crash|leak|race|deadlock|what happens if|goes wrong|edge case)\b/.test(s)) return "fail";
+  if (/\b(vs|versus|difference|instead of|prefer|trade off|tradeoff|when would you|why choose|pros and cons|downside)\b/.test(s)) return "trade";
+  return "def";
+}
+
+/* ---------- spaced repetition (5 boxes) ---------- */
+const INTERVALS = [0, 1, 3, 8, 21, 55];
+const DAY = 86400000;
+const now = () => Date.now();
+const dueIn = (box) => now() + INTERVALS[Math.min(box, INTERVALS.length - 1)] * DAY;
+const isDue = (q) => q.due <= now();
+const fmtDue = (q) => {
+  const d = Math.round((q.due - now()) / DAY);
+  if (q.due <= now()) return "due now";
+  if (d <= 1) return "due tomorrow";
+  return "due in " + d + "d";
+};
+
+/* ---------- concepts ---------- */
+const cnorm = (s) => norm(s).replace(/\s+/g, "");
+function resolveConcept(input, concepts) {
+  const k = cnorm(input);
+  if (!k) return { kind: "empty" };
+  for (const c of concepts) {
+    if (cnorm(c.name) === k || (c.aliases || []).some((a) => cnorm(a) === k)) return { kind: "exact", concept: c };
+  }
+  let best = null, score = 0;
+  for (const c of concepts) {
+    const s = similarity(c.name, input);
+    if (s > score) { score = s; best = c; }
+  }
+  if (best && score >= 66) return { kind: "similar", concept: best, score };
+  return { kind: "new" };
+}
+
+/* ---------- storage ---------- */
+const KEY = "qbank:v1";
+const EMPTY = { questions: [], concepts: [], talkTarget: 90 };
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+const STARTER = (() => {
+  const cs = ["JavaScript", "React", "System design", "SQL", "Behavioural"].map((n) => ({ id: uid(), name: n, aliases: [] }));
+  const byName = (n) => cs.find((c) => c.name === n).id;
+  const raw = [
+    ["What is the event loop, and how does it order microtasks against macrotasks?", "JavaScript", "def", "Call stack empties, then the whole microtask queue drains (promises), then one macrotask (timers, I/O). Nested promises still finish before the next setTimeout."],
+    ["When would you reach for a WeakMap instead of a Map?", "JavaScript", "trade", "When keys are objects you don't own the lifetime of — private metadata, DOM node caches. Entries vanish with the key, so no leak. Cost: not iterable, no size."],
+    ["What problem do React keys solve during reconciliation?", "React", "def", "They give each child a stable identity across renders so React moves nodes instead of rebuilding them. Index keys break the moment the list reorders."],
+    ["What happens if you mutate state directly instead of replacing it?", "React", "fail", "The reference is unchanged, so bail-out checks and memo comparisons skip the re-render. It looks like a stale UI that fixes itself on the next unrelated update."],
+    ["Tell me about a time you made a slow React screen fast.", "React", "story", "Situation, the measurement you took first (Profiler, not a guess), the actual cause, the fix, and the number that moved."],
+    ["How would you keep a feed API responsive if traffic grew 10x overnight?", "System design", "scale", "Find the ceiling first. Then: read replicas, cache the fan-out, precompute timelines for heavy accounts, shed load at the edge, and degrade features rather than the whole page."],
+    ["When is eventual consistency an acceptable trade?", "System design", "trade", "When a stale read is cheap and a write stall is expensive — like counts, feeds, recommendations. Not for balances, seat booking, or anything a user reads back straight after writing."],
+    ["A query got 50x slower after a deploy. How do you find out why?", "SQL", "debug", "Compare plans before and after, check row estimates against reality, look for a dropped index, a changed data type forcing a cast, or new data volume flipping the planner's choice."],
+    ["What does a database index actually store, and why does that speed up reads?", "SQL", "def", "Usually a B-tree of sorted key values plus row pointers, so lookups become log-n descents instead of full scans. Writes pay for it, and the sort order determines which queries benefit."],
+    ["Describe a disagreement with a senior engineer and how it ended.", "Behavioural", "story", "Keep it technical, not personal. What you argued, what evidence you brought, what you conceded, what shipped, and what you'd do differently."],
+  ];
+  return {
+    concepts: cs,
+    talkTarget: 90,
+    questions: raw.map(([text, concept, angle, answer], i) => ({
+      id: uid(), text, conceptId: byName(concept), angle, answer,
+      difficulty: i % 3 === 0 ? "hard" : "medium",
+      box: 0, due: now(), reps: 0, lapses: 0, created: now() - i * 1000, variantOf: null,
+    })),
+  };
+})();
+
+/* ============================================================ */
+
+function QuestionBank() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [tab, setTab] = useState("add");
+  const [prefill, setPrefill] = useState(null);
+  const saveT = useRef(null);
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const r = await window.storage.get(KEY);
+        if (live) setData(r && r.value ? { ...EMPTY, ...JSON.parse(r.value) } : EMPTY);
+      } catch {
+        if (live) setData(EMPTY);
+      }
+    })();
+    return () => { live = false; };
+  }, []);
+
+  const commit = useCallback((next) => {
+    setData(next);
+    clearTimeout(saveT.current);
+    saveT.current = setTimeout(async () => {
+      try {
+        const r = await window.storage.set(KEY, JSON.stringify(next));
+        if (!r) setErr("Couldn't save to this device. Your latest edits are only in this session.");
+        else setErr(null);
+      } catch {
+        setErr("Couldn't save to this device. Your latest edits are only in this session.");
+      }
+    }, 350);
+  }, []);
+
+  if (!data) {
+    return (
+      <div className="qb">
+        <style>{CSS}</style>
+        <div className="wrap">
+          <div className="mast"><h1>The <em>Bank</em></h1><p>Opening your question bank…</p></div>
+        </div>
+      </div>
+    );
+  }
+
+  const dueCount = data.questions.filter(isDue).length;
+
+  return (
+    <div className="qb">
+      <style>{CSS}</style>
+      <div className="wrap">
+        <div className="mast">
+          <h1>The <em>Bank</em></h1>
+          <p>{data.questions.length} questions · {data.concepts.length} concepts · no duplicates</p>
+        </div>
+
+        <div className="tabs" role="tablist">
+          {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["bank", "Bank"]].map(([k, label]) => (
+            <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
+              {label}
+              {k === "review" && dueCount > 0 && <span className="badge">{dueCount}</span>}
+            </button>
+          ))}
+        </div>
+
+        {err && <div className="alert warn" style={{ marginTop: 0, marginBottom: 14 }}><b>Not saved</b>{err}</div>}
+
+        {tab === "add" && <AddView data={data} commit={commit} prefill={prefill} clearPrefill={() => setPrefill(null)} />}
+        {tab === "review" && <ReviewView data={data} commit={commit} goAdd={() => setTab("add")} />}
+        {tab === "coverage" && <CoverageView data={data} onGap={(p) => { setPrefill(p); setTab("add"); }} />}
+        {tab === "bank" && <BankView data={data} commit={commit} goAdd={() => setTab("add")} />}
+      </div>
+    </div>
+  );
+}
+
+/* ============================ ADD ============================ */
+
+function AddView({ data, commit, prefill, clearPrefill }) {
+  const [text, setText] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [conceptInput, setConceptInput] = useState("");
+  const [conceptId, setConceptId] = useState(null);
+  const [angle, setAngle] = useState(null);
+  const [difficulty, setDifficulty] = useState("medium");
+  const [override, setOverride] = useState(false);
+  const [flash, setFlash] = useState(null);
+  const [debounced, setDebounced] = useState("");
+
+  useEffect(() => {
+    if (!prefill) return;
+    setText(prefill.text || "");
+    setConceptId(prefill.conceptId || null);
+    setConceptInput("");
+    if (prefill.angle) setAngle(prefill.angle);
+    clearPrefill();
+  }, [prefill, clearPrefill]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(text), 180);
+    return () => clearTimeout(t);
+  }, [text]);
+
+  const active = debounced.trim().length >= 8;
+
+  const matches = useMemo(() => {
+    if (!active) return [];
+    return data.questions
+      .map((q) => ({ q, score: similarity(debounced, q.text) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .filter((m) => m.score >= 22);
+  }, [debounced, active, data.questions]);
+
+  const top = matches.length ? matches[0].score : 0;
+  const bnd = active ? band(top) : "clear";
+  const blocked = active && bnd === "collide" && !override;
+
+  const conceptOf = (id) => data.concepts.find((c) => c.id === id);
+
+  /* concept suggestions from the words in the question */
+  const suggestedConcepts = useMemo(() => {
+    if (!active) return [];
+    const t = toks(debounced);
+    return data.concepts
+      .map((c) => {
+        const bag = new Set();
+        data.questions.filter((q) => q.conceptId === c.id).forEach((q) => toks(q.text).forEach((w) => bag.add(w)));
+        toks(c.name).forEach((w) => bag.add(w));
+        let hit = 0;
+        t.forEach((w) => { if (bag.has(w)) hit++; });
+        return { c, hit };
+      })
+      .filter((x) => x.hit > 0)
+      .sort((a, b) => b.hit - a.hit)
+      .slice(0, 4)
+      .map((x) => x.c);
+  }, [debounced, active, data.concepts, data.questions]);
+
+  const guessed = active ? guessAngle(debounced) : null;
+  useEffect(() => { if (guessed && angle === null) setAngle(guessed); }, [guessed, angle]);
+
+  const difficultyHint = useMemo(() => {
+    const near = matches.filter((m) => m.score >= 40);
+    if (near.length < 2) return null;
+    const counts = {};
+    near.forEach((m) => { counts[m.q.difficulty] = (counts[m.q.difficulty] || 0) + 1; });
+    const win = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    return win;
+  }, [matches]);
+
+  const resolution = useMemo(
+    () => (conceptInput.trim() ? resolveConcept(conceptInput, data.concepts) : null),
+    [conceptInput, data.concepts]
+  );
+
+  /* which angles this concept still lacks */
+  const gapAngles = useMemo(() => {
+    if (!conceptId) return [];
+    const have = new Set(data.questions.filter((q) => q.conceptId === conceptId).map((q) => q.angle));
+    return ANGLES.filter((a) => !have.has(a.id));
+  }, [conceptId, data.questions]);
+
+  function pickConcept(c) { setConceptId(c.id); setConceptInput(""); }
+
+  function useAliasFor(c) {
+    const typed = conceptInput.trim();
+    const next = {
+      ...data,
+      concepts: data.concepts.map((x) =>
+        x.id === c.id ? { ...x, aliases: [...(x.aliases || []), typed] } : x
+      ),
+    };
+    commit(next);
+    setConceptId(c.id);
+    setConceptInput("");
+    setFlash({ kind: "ok", title: "Folded in", body: '"' + typed + '" now points at ' + c.name + '. Type it again any time.' });
+  }
+
+  function createConcept() {
+    const name = conceptInput.trim().replace(/\s+/g, " ");
+    const c = { id: uid(), name: name.charAt(0).toUpperCase() + name.slice(1), aliases: [] };
+    commit({ ...data, concepts: [...data.concepts, c] });
+    setConceptId(c.id);
+    setConceptInput("");
+  }
+
+  function save(asVariant) {
+    const q = {
+      id: uid(),
+      text: text.trim().replace(/\s+/g, " "),
+      answer: answer.trim(),
+      conceptId,
+      angle: angle || "def",
+      difficulty,
+      box: 0, due: now(), reps: 0, lapses: 0, created: now(),
+      variantOf: asVariant ? matches[0].q.id : null,
+    };
+    commit({ ...data, questions: [q, ...data.questions] });
+    setText(""); setAnswer(""); setAngle(null); setOverride(false); setDebounced("");
+    setFlash({
+      kind: "ok",
+      title: asVariant ? "Saved as a variant" : "Added to the bank",
+      body: asVariant
+        ? "Filed under the question it resembles, so review shows one of them at a time."
+        : "First review is queued for today. " + (conceptId ? angleName(q.angle) + " angle covered for " + conceptOf(conceptId).name + "." : ""),
+    });
+  }
+
+  if (!data.questions.length && !data.concepts.length) {
+    return (
+      <div className="card">
+        <div className="empty">
+          <h3>An empty bank can't spot a duplicate.</h3>
+          <p>Load ten real questions across five concepts, then try typing something similar — the gauge will catch you.</p>
+          <button className="btn" onClick={() => commit({ ...EMPTY, ...STARTER })}>Load the starter set</button>
+          <p style={{ marginTop: 14, marginBottom: 0, fontSize: 12.5 }}>Or just start typing below.</p>
+        </div>
+        <div className="field" style={{ marginTop: 4 }}>
+          <span className="eyebrow">The question</span>
+          <textarea className="q" value={text} onChange={(e) => setText(e.target.value)} placeholder="Type the question as an interviewer would ask it…" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {flash && (
+        <div className={"alert " + (flash.kind === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}>
+          <b>{flash.title}</b>{flash.body}
+        </div>
+      )}
+
+      <div className="card">
+        <div className="field">
+          <span className="eyebrow">The question</span>
+          <textarea
+            className="q" value={text}
+            onChange={(e) => { setText(e.target.value); setOverride(false); setFlash(null); }}
+            placeholder="Type the question as an interviewer would ask it…"
+          />
+          <p className="hint">Measured against all {data.questions.length} questions as you type.</p>
+        </div>
+
+        {/* ---- COLLISION GAUGE ---- */}
+        <div className="gauge">
+          <div className="gauge-top">
+            <div className="gauge-num" style={{ color: active ? BAND_COLOR[bnd] : "#C3C9D6" }}>
+              {active ? top : "—"}<span>{active ? "%" : ""}</span>
+            </div>
+            <div className="gauge-verdict">
+              <b style={{ color: active ? BAND_COLOR[bnd] : "var(--soft)" }}>
+                {active ? BAND_TEXT[bnd][0] : "Waiting for a question"}
+              </b>
+              <small>{active ? BAND_TEXT[bnd][1] : "eight characters to start"}</small>
+            </div>
+          </div>
+          <div className="ticks" aria-hidden="true">
+            {Array.from({ length: 20 }).map((_, i) => {
+              const lit = active && top >= (i + 1) * 5;
+              return <i key={i} className={lit ? "lit" : ""} style={lit ? { background: BAND_COLOR[bnd] } : undefined} />;
+            })}
+          </div>
+          <div className="ticks-scale"><span>NEW</span><span>OVERLAP</span><span>DUPLICATE</span></div>
+        </div>
+
+        {matches.length > 0 && (
+          <div className="near">
+            <span className="eyebrow">Closest in the bank</span>
+            {matches.map(({ q, score }) => {
+              const c = conceptOf(q.conceptId);
+              return (
+                <div className="near-row" key={q.id}>
+                  <span className="pct" style={{ color: BAND_COLOR[band(score)] }}>{score}%</span>
+                  <div>
+                    <div className="near-q">{q.text}</div>
+                    <div className="near-meta">{c ? c.name : "unfiled"} · {angleName(q.angle)} · box {q.box + 1}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {active && bnd === "collide" && !override && (
+          <div className="alert stop">
+            <b>This one's already asked.</b>
+            You can sharpen the wording, or keep it as a variant of the existing question so review never shows you both.
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="btn tiny line" onClick={() => setOverride(true)}>Keep as a variant</button>
+            </div>
+          </div>
+        )}
+        {active && bnd === "near" && (
+          <div className="alert warn">
+            <b>Close, but maybe not the same.</b>
+            If it tests a different angle, keep it. If it's the same answer in new words, edit the one above instead.
+          </div>
+        )}
+      </div>
+
+      {/* ---- concept ---- */}
+      <div className="card">
+        <span className="eyebrow">Concept</span>
+        {conceptId ? (
+          <div className="chips">
+            <button className="chip on" onClick={() => setConceptId(null)}>
+              {conceptOf(conceptId).name}<span className="x">✕</span>
+            </button>
+          </div>
+        ) : (
+          <>
+            <input
+              className="t" value={conceptInput}
+              onChange={(e) => setConceptInput(e.target.value)}
+              placeholder="Search or name a concept…"
+            />
+            {conceptInput.trim() === "" && suggestedConcepts.length > 0 && (
+              <>
+                <p className="hint">From the words you used:</p>
+                <div className="chips">
+                  {suggestedConcepts.map((c) => (
+                    <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>
+                  ))}
+                </div>
+              </>
+            )}
+            {conceptInput.trim() !== "" && (
+              <div className="chips">
+                {data.concepts
+                  .filter((c) => cnorm(c.name).includes(cnorm(conceptInput)) || (c.aliases || []).some((a) => cnorm(a).includes(cnorm(conceptInput))))
+                  .slice(0, 6)
+                  .map((c) => <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>)}
+              </div>
+            )}
+            {resolution && resolution.kind === "exact" && (
+              <div className="alert ok"><b>{resolution.concept.name} already exists.</b>
+                <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => pickConcept(resolution.concept)}>Use it</button>
+              </div>
+            )}
+            {resolution && resolution.kind === "similar" && (
+              <div className="alert warn">
+                <b>Did you mean {resolution.concept.name}?</b>
+                Two spellings of one concept will split your coverage in half.
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button className="btn tiny" onClick={() => useAliasFor(resolution.concept)}>Use {resolution.concept.name}</button>
+                  <button className="btn tiny line" onClick={createConcept}>Keep separate</button>
+                </div>
+              </div>
+            )}
+            {resolution && resolution.kind === "new" && (
+              <button className="btn tiny line" style={{ marginTop: 10 }} onClick={createConcept}>
+                Create “{conceptInput.trim()}”
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* ---- angle + difficulty ---- */}
+      <div className="card">
+        <span className="eyebrow">Angle {guessed && <span style={{ textTransform: "none", letterSpacing: 0 }}>— read as {angleName(guessed)}</span>}</span>
+        <div className="chips">
+          {ANGLES.map((a) => (
+            <button key={a.id} className={"chip" + (angle === a.id ? " on" : "")} onClick={() => setAngle(a.id)}>{a.name}</button>
+          ))}
+        </div>
+        <p className="hint">Every concept is worth asking six ways. The angle is how Coverage finds your blind spots.</p>
+
+        {conceptId && gapAngles.length > 0 && (
+          <>
+            <span className="eyebrow" style={{ marginTop: 16 }}>Still unasked for {conceptOf(conceptId).name}</span>
+            <div className="chips">
+              {gapAngles.map((a) => (
+                <button key={a.id} className="chip ghost" onClick={() => setAngle(a.id)}>{a.name}</button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="field">
+          <span className="eyebrow">Difficulty {difficultyHint && <span style={{ textTransform: "none", letterSpacing: 0 }}>— similar ones are {difficultyHint}</span>}</span>
+          <div className="chips">
+            {["easy", "medium", "hard"].map((d) => (
+              <button key={d} className={"chip" + (difficulty === d ? " on" : "")} onClick={() => setDifficulty(d)}>{d}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ---- answer ---- */}
+      <div className="card">
+        <span className="eyebrow">What a strong answer covers</span>
+        <textarea className="q sm" value={answer} onChange={(e) => setAnswer(e.target.value)}
+          placeholder="Three or four beats you want to hit out loud. Not a script." />
+        <p className="hint">Review reads this back to you after you've answered, so you can mark yourself honestly.</p>
+      </div>
+
+      <div className="card">
+        <button className="btn" disabled={!text.trim() || blocked} onClick={() => save(override && bnd === "collide")}>
+          {blocked ? "Too close to save" : override && bnd === "collide" ? "Save as a variant" : "Add to the bank"}
+        </button>
+        {!conceptId && text.trim() && <p className="hint" style={{ textAlign: "center" }}>Saving without a concept leaves it out of Coverage.</p>}
+      </div>
+    </>
+  );
+}
+
+/* =========================== REVIEW =========================== */
+
+function ReviewView({ data, commit, goAdd }) {
+  const [phase, setPhase] = useState("ask");
+  const [elapsed, setElapsed] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState([]);
+
+  const queue = useMemo(() => {
+    const skip = new Set();
+    data.questions.forEach((q) => { if (q.variantOf) skip.add(q.id); });
+    return data.questions
+      .filter((q) => !skip.has(q.id) && isDue(q) && !done.includes(q.id))
+      .sort((a, b) => a.due - b.due || a.box - b.box);
+  }, [data.questions, done]);
+
+  const ahead = useMemo(
+    () => data.questions.filter((q) => !q.variantOf && !isDue(q)).sort((a, b) => a.due - b.due),
+    [data.questions]
+  );
+
+  const card = queue[0];
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  useEffect(() => { setPhase("ask"); setElapsed(0); setRunning(false); }, [card && card.id]);
+
+  function grade(g) {
+    const q = card;
+    let box = q.box, lapses = q.lapses;
+    if (g === "again") { box = 0; lapses++; }
+    else if (g === "hard") box = Math.max(0, q.box);
+    else if (g === "good") box = Math.min(INTERVALS.length - 1, q.box + 1);
+    else box = Math.min(INTERVALS.length - 1, q.box + 2);
+    const next = data.questions.map((x) =>
+      x.id === q.id ? { ...x, box, lapses, reps: x.reps + 1, due: g === "again" ? now() + 600000 : dueIn(box), last: now() } : x
+    );
+    commit({ ...data, questions: next });
+    setDone((d) => [...d, q.id]);
+  }
+
+  if (!data.questions.length) {
+    return <div className="card"><div className="empty">
+      <h3>Nothing to review yet.</h3>
+      <p>Review pulls from the bank on a spacing schedule. Add a question and it shows up here today.</p>
+      <button className="btn" onClick={goAdd}>Add a question</button>
+    </div></div>;
+  }
+
+  if (!card) {
+    const nxt = ahead[0];
+    return <div className="card"><div className="empty">
+      <h3>Queue clear.</h3>
+      <p>
+        {done.length > 0 ? "You answered " + done.length + " out loud. " : ""}
+        {nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}
+      </p>
+      <button className="btn line" onClick={goAdd}>Add a question</button>
+    </div></div>;
+  }
+
+  const concept = data.concepts.find((c) => c.id === card.conceptId);
+  const target = data.talkTarget || 90;
+  const variants = data.questions.filter((q) => q.variantOf === card.id);
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+
+  return (
+    <>
+      <div className="stat-row">
+        <div className="stat"><b>{queue.length}</b><small>in queue</small></div>
+        <div className="stat"><b>{done.length}</b><small>done today</small></div>
+        <div className="stat"><b>{card.box + 1}<span style={{ fontSize: 13, color: "var(--soft)" }}>/6</span></b><small>this box</small></div>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">{concept ? concept.name : "Unfiled"} · {angleName(card.angle)} · {card.difficulty}</span>
+        <div className="rev-q">{card.text}</div>
+        {variants.length > 0 && (
+          <p className="hint" style={{ marginTop: 10 }}>Also asked as: {variants.map((v) => v.text).join(" / ")}</p>
+        )}
+
+        {phase === "ask" && (
+          <>
+            <div className="alert ok" style={{ background: "#F1F3F8", border: "1px solid var(--rule)", color: "var(--ink)" }}>
+              <b>Say it out loud, on the clock.</b>
+              Interviews are spoken. Reading the answer in your head is the reason it falls apart in the room.
+            </div>
+            <button className="btn" style={{ marginTop: 12 }} onClick={() => { setRunning(true); setPhase("talk"); }}>
+              Start answering
+            </button>
+          </>
+        )}
+
+        {phase === "talk" && (
+          <div style={{ marginTop: 16 }}>
+            <div className="timer" style={{ color: elapsed > target ? "var(--warn)" : "var(--ink)" }}>{mm}:{ss}</div>
+            <div className="timer-bar"><i style={{ width: Math.min(100, (elapsed / target) * 100) + "%", background: elapsed > target ? "var(--warn)" : "var(--indigo)" }} /></div>
+            <p className="hint">Aim for {target}s. Over that and you're rambling; under 20s and you're thin.</p>
+            <button className="btn line" style={{ marginTop: 10 }} onClick={() => { setRunning(false); setPhase("check"); }}>
+              Done — show me the answer
+            </button>
+          </div>
+        )}
+
+        {phase === "check" && (
+          <div style={{ marginTop: 16 }}>
+            <span className="eyebrow">You spoke for {mm}:{ss} · target {target}s</span>
+            {card.answer
+              ? <div className="item-ans" style={{ fontSize: 16 }}>{card.answer}</div>
+              : <p className="hint">No answer notes saved for this one. Write them while it's fresh — Bank lets you edit.</p>}
+            <span className="eyebrow" style={{ marginTop: 18 }}>How did that go?</span>
+            <div className="grade">
+              <button onClick={() => grade("again")}><b>Blanked</b><small>back in 10 min</small></button>
+              <button onClick={() => grade("hard")}><b>Shaky</b><small>same box</small></button>
+              <button onClick={() => grade("good")}><b>Solid</b><small>+{INTERVALS[Math.min(card.box + 1, 5)]}d</small></button>
+              <button onClick={() => grade("easy")}><b>Fluent</b><small>+{INTERVALS[Math.min(card.box + 2, 5)]}d</small></button>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ========================== COVERAGE ========================== */
+
+function CoverageView({ data, onGap }) {
+  const rows = useMemo(() => {
+    return data.concepts
+      .map((c) => {
+        const qs = data.questions.filter((q) => q.conceptId === c.id && !q.variantOf);
+        const byAngle = {};
+        qs.forEach((q) => {
+          byAngle[q.angle] = byAngle[q.angle] || [];
+          byAngle[q.angle].push(q);
+        });
+        const covered = Object.keys(byAngle).length;
+        const strength = qs.length ? qs.reduce((s, q) => s + q.box, 0) / qs.length : 0;
+        return { c, qs, byAngle, covered, strength };
+      })
+      .sort((a, b) => a.covered - b.covered || b.qs.length - a.qs.length);
+  }, [data]);
+
+  const unfiled = data.questions.filter((q) => !q.conceptId).length;
+  const totalCells = data.concepts.length * ANGLES.length;
+  const filled = rows.reduce((s, r) => s + r.covered, 0);
+
+  if (!data.concepts.length) {
+    return <div className="card"><div className="empty">
+      <h3>Coverage needs concepts.</h3>
+      <p>Tag your questions with a concept and this becomes a map of what you can and can't talk about.</p>
+    </div></div>;
+  }
+
+  return (
+    <>
+      <div className="stat-row">
+        <div className="stat"><b>{filled}<span style={{ fontSize: 13, color: "var(--soft)" }}>/{totalCells}</span></b><small>angles covered</small></div>
+        <div className="stat"><b>{data.questions.filter((q) => q.box >= 3).length}</b><small>held firmly</small></div>
+        <div className="stat"><b>{rows.filter((r) => r.covered <= 2).length}</b><small>thin concepts</small></div>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Weakest concepts first · tap an empty cell to write that question</span>
+        {rows.map(({ c, qs, byAngle, covered, strength }) => (
+          <div className="cov" key={c.id}>
+            <div className="cov-name">
+              {c.name}
+              <small>{qs.length} question{qs.length === 1 ? "" : "s"} · {covered}/6 angles{strength >= 2.5 ? " · strong recall" : ""}</small>
+            </div>
+            <div className="cells">
+              {ANGLES.map((a) => {
+                const list = byAngle[a.id] || [];
+                const avg = list.length ? list.reduce((s, q) => s + q.box, 0) / list.length : 0;
+                const cls = !list.length ? "cell" : avg >= 3 ? "cell strong" : "cell has";
+                return (
+                  <button
+                    key={a.id} className={cls}
+                    title={a.name + (list.length ? " · " + list.length + " question(s)" : " · not asked yet")}
+                    aria-label={c.name + ", " + a.name + ", " + (list.length ? list.length + " questions" : "empty")}
+                    onClick={() => !list.length && onGap({ conceptId: c.id, angle: a.id, text: "" })}
+                  >{a.short}</button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div className="legend">
+          {ANGLES.map((a) => <span key={a.id}>{a.short} — {a.name}</span>)}
+        </div>
+        <p className="note" style={{ marginTop: 14 }}>
+          <b>Dark</b> means asked. <b>Green</b> means you've recalled it correctly at least three times running.
+          {unfiled > 0 && " " + unfiled + " question" + (unfiled === 1 ? " has" : "s have") + " no concept and sit outside this map."}
+        </p>
+      </div>
+    </>
+  );
+}
+
+/* ============================ BANK ============================ */
+
+function BankView({ data, commit, goAdd }) {
+  const [q, setQ] = useState("");
+  const [conceptFilter, setConceptFilter] = useState("all");
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  const list = useMemo(() => {
+    let out = data.questions.filter((x) => !x.variantOf);
+    if (conceptFilter !== "all") out = out.filter((x) => (conceptFilter === "none" ? !x.conceptId : x.conceptId === conceptFilter));
+    if (q.trim()) {
+      out = out
+        .map((x) => ({ x, s: similarity(q, x.text) }))
+        .filter((r) => r.s >= 20 || norm(r.x.text).includes(norm(q)))
+        .sort((a, b) => b.s - a.s)
+        .map((r) => r.x);
+    } else {
+      out = [...out].sort((a, b) => b.created - a.created);
+    }
+    return out;
+  }, [data.questions, q, conceptFilter]);
+
+  function remove(id) {
+    commit({ ...data, questions: data.questions.filter((x) => x.id !== id && x.variantOf !== id) });
+  }
+  function saveAnswer(id) {
+    commit({ ...data, questions: data.questions.map((x) => (x.id === id ? { ...x, answer: draft.trim() } : x)) });
+    setEditing(null);
+  }
+
+  if (!data.questions.length) {
+    return <div className="card"><div className="empty">
+      <h3>The bank is empty.</h3>
+      <p>Everything you add shows up here, with its concept, angle, and how firmly you're holding it.</p>
+      <button className="btn" onClick={goAdd}>Add the first question</button>
+    </div></div>;
+  }
+
+  return (
+    <>
+      <div className="card">
+        <input className="t" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the bank — fuzzy, so near-misses show up too" />
+        <div className="field">
+          <select className="t" value={conceptFilter} onChange={(e) => setConceptFilter(e.target.value)}>
+            <option value="all">All concepts</option>
+            {data.concepts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value="none">Unfiled</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">{list.length} question{list.length === 1 ? "" : "s"}</span>
+        {list.length === 0 && <p className="note">Nothing matches. Clear the search, or add it — the gauge will confirm it's new.</p>}
+        {list.map((item) => {
+          const c = data.concepts.find((x) => x.id === item.conceptId);
+          const variants = data.questions.filter((v) => v.variantOf === item.id);
+          return (
+            <div className="item" key={item.id}>
+              <div className="item-q">{item.text}</div>
+              <div className="item-meta">
+                <span>{c ? c.name : "unfiled"}</span><span className="dot" />
+                <span>{angleName(item.angle)}</span><span className="dot" />
+                <span>box {item.box + 1}/6</span><span className="dot" />
+                <span>{fmtDue(item)}</span>
+                {item.lapses > 0 && <><span className="dot" /><span style={{ color: "var(--collide)" }}>{item.lapses} blank{item.lapses === 1 ? "" : "s"}</span></>}
+              </div>
+              {item.answer && editing !== item.id && <div className="item-ans">{item.answer}</div>}
+              {editing === item.id ? (
+                <>
+                  <textarea className="q sm" style={{ marginTop: 10 }} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Beats a strong answer hits…" />
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button className="btn tiny" onClick={() => saveAnswer(item.id)}>Save notes</button>
+                    <button className="btn tiny line" onClick={() => setEditing(null)}>Cancel</button>
+                  </div>
+                </>
+              ) : (
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button className="btn tiny line" onClick={() => { setEditing(item.id); setDraft(item.answer || ""); }}>
+                    {item.answer ? "Edit notes" : "Add notes"}
+                  </button>
+                  <button className="btn tiny line" onClick={() => remove(item.id)}>Delete</button>
+                </div>
+              )}
+              {variants.map((v) => (
+                <div className="variant" key={v.id} style={{ marginTop: 10 }}>
+                  <div className="near-meta">variant</div>
+                  <div className="item-q" style={{ fontSize: 15 }}>{v.text}</div>
+                  <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => remove(v.id)}>Delete variant</button>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Start over</span>
+        {confirmReset ? (
+          <>
+            <p className="note" style={{ marginTop: 0 }}>This deletes every question, concept, and review score on this device. It can't be undone.</p>
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="btn danger" onClick={() => { commit(EMPTY); setConfirmReset(false); }}>Delete everything</button>
+              <button className="btn line" onClick={() => setConfirmReset(false)}>Keep it</button>
+            </div>
+          </>
+        ) : (
+          <button className="btn line" onClick={() => setConfirmReset(true)}>Clear the bank</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<QuestionBank />);
+</script>
+</body>
+</html>
