@@ -694,6 +694,27 @@ const Storage = {
   },
 };
 
+/* One-way migration flags. These must survive a wipe, otherwise clearing the
+   bank makes it look empty and every migration source floods back in on the
+   next refresh. Kept in localStorage first (a SQLite wipe cannot touch it),
+   mirrored into meta as a backup for when localStorage is unavailable. */
+const MIG = {
+  key: (kind) => "qbank:migrated:" + kind,
+  read(kind) {
+    try { if (localStorage.getItem(this.key(kind))) return true; } catch (e) {}
+    if (Storage.backend === "sqlite" && Storage.db) {
+      try { if (Storage.all("SELECT v FROM meta WHERE k=?", ["migrated:" + kind]).length) return true; } catch (e) {}
+    }
+    return false;
+  },
+  write(kind) {
+    try { localStorage.setItem(this.key(kind), String(Date.now())); } catch (e) {}
+    if (Storage.backend === "sqlite" && Storage.db) {
+      try { Storage.run("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", ["migrated:" + kind, String(Date.now())]); } catch (e) {}
+    }
+  },
+};
+
 /* ====================== Repo — the app's only API ====================== */
 /* Identical surface for both backends, so no view code knows the difference. */
 const Repo = {
@@ -834,23 +855,32 @@ const Repo = {
       ["reviews", "vectors", "questions", "concepts", "meta"].forEach((t) => Storage.db.run("DELETE FROM " + t));
       /* DELETE only frees pages inside the file; VACUUM actually shrinks it */
       Storage.db.run("VACUUM");
-      Storage.markDirty();
-      await Storage.flush();
-      return;
     }
-    await Promise.all(["questions", "concepts", "vectors", "reviews", "meta"].map((s) => IDB.clear(s)));
+    /* Clear the migration sources too, or they repopulate on the next refresh. */
+    let cleared = { idb: false, legacy: false };
+    try {
+      await Promise.all(["questions", "concepts", "vectors", "reviews", "meta"].map((n) => IDB.clear(n)));
+      cleared.idb = true;
+    } catch (e) {}
+    try { localStorage.removeItem(LEGACY_KEY); cleared.legacy = true; } catch (e) {}
+    /* Re-assert after the meta table was truncated, so nothing migrates again. */
+    MIG.write("idb"); MIG.write("legacy");
+    if (Storage.backend === "sqlite") { Storage.markDirty(); await Storage.flush(); }
+    return cleared;
   },
 
   /** IndexedDB -> SQLite, once, on the first run after this upgrade. */
   async migrateIDB() {
     if (Storage.backend !== "sqlite") return 0;
+    if (MIG.read("idb")) return 0;
     const have = Storage.all("SELECT count(*) c FROM questions");
-    if (have[0].c > 0) return 0;
+    if (have[0].c > 0) { MIG.write("idb"); return 0; }
     let qs = [], cs = [], vs = [], rs = [];
     try {
       qs = await IDB.all("questions"); cs = await IDB.all("concepts");
       vs = await IDB.all("vectors"); rs = await IDB.all("reviews");
-    } catch (e) { return 0; }
+    } catch (e) { return 0; }   /* could not read: do not mark, try again later */
+    MIG.write("idb");
     if (!qs.length && !cs.length) return 0;
     await this.saveConcepts(cs);
     await this.saveQuestions(qs);
@@ -862,11 +892,12 @@ const Repo = {
 
   /** localStorage -> whatever backend is active, once. */
   async migrateLegacy() {
+    if (MIG.read("legacy")) return 0;
     let raw = null;
     try { raw = localStorage.getItem(LEGACY_KEY); } catch (e) { return 0; }
-    if (!raw) return 0;
+    if (!raw) { MIG.write("legacy"); return 0; }
     const cur = await this.load();
-    if (cur.questions.length) return 0;
+    if (cur.questions.length) { MIG.write("legacy"); return 0; }
     try {
       const old = JSON.parse(raw);
       const qs = (old.questions || []).map((q) => ({
@@ -877,9 +908,9 @@ const Repo = {
       await this.saveConcepts(old.concepts || []);
       await this.saveQuestions(qs);
       if (Storage.backend === "sqlite") await Storage.flush();
-      localStorage.setItem(LEGACY_KEY + ":migrated", String(Date.now()));
+      MIG.write("legacy");
       return qs.length;
-    } catch (e) { return 0; }
+    } catch (e) { MIG.write("legacy"); return 0; }
   },
 };
 
@@ -2188,9 +2219,9 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
         <span className="eyebrow">Start over</span>
         {confirmReset ? (
           <>
-            <p className="note" style={{ marginTop: 0 }}>This truncates every table in bank.sqlite3. Export first if you want them back.</p>
+            <p className="note" style={{ marginTop: 0 }}>This truncates every table in bank.sqlite3 and also clears the old IndexedDB and localStorage copies, so nothing comes back on refresh. Export first if you want them back.</p>
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], []); refreshStore(); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "The bank is empty and the file has been rewritten." }); }}>Delete everything</button>
+              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], []); refreshStore(); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "Every table truncated, old IndexedDB and localStorage copies cleared, file vacuumed. It will stay empty." }); }}>Delete everything</button>
               <button className="btn line" onClick={() => setConfirmReset(false)}>Keep it</button>
             </div>
           </>
