@@ -18,7 +18,27 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
 </head>
 <body>
-<div id="root"><div id="boot"><b>The Bank</b>Loading…</div></div>
+<div id="root"><div id="boot"><b>The Bank</b>Opening bank.sqlite3…</div></div>
+
+<script>
+/* sql.js: SQLite compiled to WebAssembly. Classic script, so it is injected
+   on demand rather than imported. Loaded at boot because it IS the store. */
+window.__SQLJS_BASE = "https://cdn.jsdelivr.net/npm/sql.js@1/dist/";
+window.__loadSqlJs = function () {
+  if (window.__sqlPromise) return window.__sqlPromise;
+  window.__sqlPromise = new Promise(function (resolve, reject) {
+    var s = document.createElement("script");
+    s.src = window.__SQLJS_BASE + "sql-wasm.js";
+    s.onload = function () {
+      if (typeof initSqlJs !== "function") return reject(new Error("sql.js did not initialise"));
+      initSqlJs({ locateFile: function (f) { return window.__SQLJS_BASE + f; } }).then(resolve, reject);
+    };
+    s.onerror = function () { reject(new Error("sql.js CDN unreachable")); };
+    document.head.appendChild(s);
+  });
+  return window.__sqlPromise;
+};
+</script>
 
 <script type="module">
 /* Transformers.js is an ES module, so it loads here and hands the pipeline
@@ -445,152 +465,450 @@ function lexCoverage(beat, transcript) {
 }
 
 /* ======================================================================
-   TIER 1 — IndexedDB store.  Four object stores so vectors (large, binary,
-   regenerable) never bloat the records you actually care about.
-   ====================================================================== */
-const DB_NAME = "qbank";
-const DB_VERSION = 1;
-const LEGACY_KEY = "qbank:v1";
+   STORAGE — SQLite compiled to WASM, persisted as one real database file
+   in the Origin Private File System.
 
-let _db = null;
-function openDB() {
-  if (_db) return Promise.resolve(_db);
+   Why this shape:
+   - sql.js holds the database in memory and hands back the raw bytes, so
+     the file on disk is a byte-for-byte valid SQLite database. You can pull
+     it out and open it in DB Browser or the sqlite3 CLI.
+   - Writes go through OPFS createWritable(), which commits atomically on
+     close, so a crash mid-save cannot leave a half-written database.
+   - No COOP/COEP headers needed, which matters because GitHub Pages cannot
+     set them. That rules out sqlite-wasm's SAHPool VFS.
+   - The cost is a whole-file rewrite per save, debounced. Fine into the
+     thousands of rows; it is the honest trade for one portable file.
+   - If OPFS or the CDN is unavailable, everything falls back to IndexedDB
+     and the app behaves identically.
+   ====================================================================== */
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS concepts (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS questions (
+  id TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  answer TEXT,
+  concept_id TEXT REFERENCES concepts(id) ON DELETE SET NULL,
+  angle TEXT DEFAULT 'def',
+  difficulty TEXT DEFAULT 'medium',
+  due INTEGER, created INTEGER, last INTEGER,
+  reps INTEGER DEFAULT 0, lapses INTEGER DEFAULT 0,
+  stability REAL, difficulty_f REAL, interval REAL,
+  variant_of TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_q_due ON questions(due);
+CREATE INDEX IF NOT EXISTS idx_q_concept ON questions(concept_id);
+CREATE INDEX IF NOT EXISTS idx_q_variant ON questions(variant_of);
+CREATE TABLE IF NOT EXISTS vectors (
+  id TEXT PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
+  dim INTEGER NOT NULL, v BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+  rid INTEGER PRIMARY KEY AUTOINCREMENT,
+  qid TEXT, at INTEGER, grade INTEGER, elapsed INTEGER,
+  stability REAL, difficulty REAL, interval REAL,
+  coverage REAL, transcript_len INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_r_qid ON reviews(qid);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+`;
+const SCHEMA_VERSION = 1;
+const DB_FILE = "bank.sqlite3";
+const LEGACY_KEY = "qbank:v1";
+const IDB_NAME = "qbank";
+
+/* ---- row mapping: snake_case on disk, camelCase in the app ---- */
+const rowToQ = (r) => ({
+  id: r.id, text: r.text, answer: r.answer || "", conceptId: r.concept_id || null,
+  angle: r.angle || "def", difficulty: r.difficulty || "medium",
+  due: r.due, created: r.created, last: r.last,
+  reps: r.reps || 0, lapses: r.lapses || 0,
+  stability: r.stability, difficultyF: r.difficulty_f, interval: r.interval,
+  variantOf: r.variant_of || null,
+});
+const qToRow = (q) => [
+  q.id, q.text, q.answer || "", q.conceptId || null, q.angle || "def", q.difficulty || "medium",
+  q.due || null, q.created || null, q.last || null,
+  q.reps || 0, q.lapses || 0,
+  q.stability == null ? null : q.stability,
+  q.difficultyF == null ? null : q.difficultyF,
+  q.interval == null ? null : q.interval,
+  q.variantOf || null,
+];
+const Q_COLS = "id,text,answer,concept_id,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of";
+const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+
+/* ====================== fallback backend: IndexedDB ==================== */
+let _idb = null;
+function openIDB() {
+  if (_idb) return Promise.resolve(_idb);
   return new Promise((resolve, reject) => {
     if (!window.indexedDB) return reject(new Error("IndexedDB unavailable"));
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(IDB_NAME, 1);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("questions")) {
         const s = db.createObjectStore("questions", { keyPath: "id" });
-        s.createIndex("due", "due");
-        s.createIndex("conceptId", "conceptId");
+        s.createIndex("due", "due"); s.createIndex("conceptId", "conceptId");
       }
       if (!db.objectStoreNames.contains("concepts")) db.createObjectStore("concepts", { keyPath: "id" });
       if (!db.objectStoreNames.contains("vectors")) db.createObjectStore("vectors", { keyPath: "id" });
       if (!db.objectStoreNames.contains("reviews")) db.createObjectStore("reviews", { keyPath: "rid", autoIncrement: true });
       if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "k" });
     };
-    req.onsuccess = () => { _db = req.result; resolve(_db); };
+    req.onsuccess = () => { _idb = req.result; resolve(_idb); };
     req.onerror = () => reject(req.error);
   });
 }
-
-function tx(store, mode, fn) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const t = db.transaction(store, mode);
-    const s = t.objectStore(store);
-    let out;
-    try { out = fn(s); } catch (e) { reject(e); return; }
+function idbTx(store, mode, fn) {
+  return openIDB().then((db) => new Promise((resolve, reject) => {
+    const t = db.transaction(store, mode), s = t.objectStore(store);
+    let out; try { out = fn(s); } catch (e) { reject(e); return; }
     t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
     t.onerror = () => reject(t.error);
     t.onabort = () => reject(t.error);
   }));
 }
-const getAll = (store) => tx(store, "readonly", (s) => s.getAll());
-const putAll = (store, rows) => tx(store, "readwrite", (s) => { rows.forEach((r) => s.put(r)); });
-const putOne = (store, row) => tx(store, "readwrite", (s) => s.put(row));
-const delOne = (store, id) => tx(store, "readwrite", (s) => s.delete(id));
-const clearStore = (store) => tx(store, "readwrite", (s) => s.clear());
-const getOne = (store, id) => tx(store, "readonly", (s) => s.get(id));
+const IDB = {
+  all: (s) => idbTx(s, "readonly", (o) => o.getAll()),
+  put: (s, row) => idbTx(s, "readwrite", (o) => o.put(row)),
+  putMany: (s, rows) => idbTx(s, "readwrite", (o) => { rows.forEach((r) => o.put(r)); }),
+  del: (s, id) => idbTx(s, "readwrite", (o) => o.delete(id)),
+  clear: (s) => idbTx(s, "readwrite", (o) => o.clear()),
+};
 
-/** The single interface the UI talks to. Backend is swappable. */
+/* ============================ the store =============================== */
+const Storage = {
+  backend: "none",        /* sqlite | idb | none */
+  reason: null,           /* why we fell back */
+  db: null,               /* sql.js Database */
+  handle: null,           /* OPFS FileHandle */
+  bytes: 0,
+  persisted: false,
+  saving: false,
+  dirty: false,
+  timer: null,
+  lastSaved: null,
+  onError: () => {},
+
+  async init() {
+    try {
+      if (navigator.storage && navigator.storage.persist) {
+        this.persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist());
+      }
+    } catch (e) {}
+
+    try {
+      if (!navigator.storage || !navigator.storage.getDirectory) throw new Error("OPFS not supported in this browser");
+      if (!window.__loadSqlJs) throw new Error("sql.js loader missing");
+      const SQL = await window.__loadSqlJs();
+      const root = await navigator.storage.getDirectory();
+      this.handle = await root.getFileHandle(DB_FILE, { create: true });
+      if (!this.handle.createWritable) throw new Error("OPFS is read-only here");
+      const file = await this.handle.getFile();
+      const buf = new Uint8Array(await file.arrayBuffer());
+      this.db = buf.byteLength ? new SQL.Database(buf) : new SQL.Database();
+      this.db.run(SCHEMA);
+      this.db.run("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)", [String(SCHEMA_VERSION)]);
+      this.bytes = buf.byteLength;
+      this.backend = "sqlite";
+      if (!buf.byteLength) await this.flush();
+    } catch (e) {
+      this.reason = (e && e.message) || "unknown";
+      try { await openIDB(); this.backend = "idb"; } catch (e2) { this.backend = "none"; throw e2; }
+    }
+
+    /* best-effort flush when the tab goes away */
+    const bye = () => { if (this.dirty) this.flush(); };
+    window.addEventListener("pagehide", bye);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") bye(); });
+    return this.backend;
+  },
+
+  /* ---- SQL helpers ---- */
+  all(sql, params) {
+    const st = this.db.prepare(sql);
+    if (params) st.bind(params);
+    const out = [];
+    while (st.step()) out.push(st.getAsObject());
+    st.free();
+    return out;
+  },
+  run(sql, params) { this.db.run(sql, params || []); this.markDirty(); },
+
+  markDirty() {
+    this.dirty = true;
+    if (this.timer) return;
+    this.timer = setTimeout(() => { this.timer = null; this.flush(); }, 500);
+  },
+
+  /** Serialise the whole database and commit it atomically. */
+  async flush() {
+    if (this.backend !== "sqlite" || !this.dirty || this.saving) return;
+    this.saving = true;
+    let bytes;
+    try { bytes = this.db.export(); this.dirty = false; }
+    catch (e) { this.saving = false; this.onError("Could not serialise the database."); return; }
+    try {
+      const w = await this.handle.createWritable();
+      await w.write(bytes);
+      await w.close();
+      this.bytes = bytes.byteLength;
+      this.lastSaved = Date.now();
+    } catch (e) {
+      this.dirty = true;
+      this.onError("Writing " + DB_FILE + " failed: " + ((e && e.message) || "unknown") + ". Data is still in memory — export a backup now.");
+    } finally {
+      this.saving = false;
+      if (this.dirty) this.markDirty();
+    }
+  },
+
+  /** Raw bytes of the database, for download or inspection. */
+  async exportFile() {
+    if (this.backend === "sqlite") { await this.flush(); return this.db.export(); }
+    return null;
+  },
+
+  async importFile(bytes) {
+    if (this.backend !== "sqlite") throw new Error("SQLite is not the active backend here");
+    const SQL = await window.__loadSqlJs();
+    const probe = new SQL.Database(new Uint8Array(bytes));
+    const t = probe.exec("SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('questions','concepts')");
+    const found = t.length ? t[0].values[0][0] : 0;
+    if (found < 2) { probe.close(); throw new Error("that file is not a Bank database"); }
+    probe.run(SCHEMA);
+    if (this.db) this.db.close();
+    this.db = probe;
+    this.dirty = true;
+    await this.flush();
+  },
+
+  info() {
+    return {
+      backend: this.backend, reason: this.reason, bytes: this.bytes,
+      persisted: this.persisted, file: DB_FILE, lastSaved: this.lastSaved, dirty: this.dirty,
+    };
+  },
+};
+
+/* ====================== Repo — the app's only API ====================== */
+/* Identical surface for both backends, so no view code knows the difference. */
 const Repo = {
   async load() {
-    const [questions, concepts, meta] = await Promise.all([getAll("questions"), getAll("concepts"), getAll("meta")]);
-    const settings = (meta.find((m) => m.k === "settings") || {}).v || {};
-    return { questions, concepts, settings };
+    if (Storage.backend === "sqlite") {
+      const questions = Storage.all("SELECT " + Q_COLS + " FROM questions").map(rowToQ);
+      const concepts = Storage.all("SELECT id,name,aliases FROM concepts").map((r) => {
+        let aliases = [];
+        try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
+        return { id: r.id, name: r.name, aliases };
+      });
+      const m = Storage.all("SELECT v FROM meta WHERE k='settings'");
+      let settings = {};
+      if (m.length) { try { settings = JSON.parse(m[0].v); } catch (e) {} }
+      return { questions, concepts, settings };
+    }
+    const [questions, concepts, meta] = await Promise.all([IDB.all("questions"), IDB.all("concepts"), IDB.all("meta")]);
+    const s = meta.find((x) => x.k === "settings");
+    return { questions, concepts, settings: (s && s.v) || {} };
   },
-  saveQuestion: (q) => putOne("questions", q),
-  saveQuestions: (qs) => putAll("questions", qs),
-  removeQuestion: (id) => delOne("questions", id),
-  saveConcept: (c) => putOne("concepts", c),
-  saveConcepts: (cs) => putAll("concepts", cs),
-  removeConcept: (id) => delOne("concepts", id),
-  saveSettings: (v) => putOne("meta", { k: "settings", v }),
 
-  /* vectors kept apart: Float32Array survives structured clone intact,
-     1536 raw bytes instead of ~7KB of JSON */
+  async saveQuestion(q) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("INSERT OR REPLACE INTO questions(" + Q_COLS + ") VALUES " + Q_MARKS, qToRow(q));
+      return;
+    }
+    return IDB.put("questions", q);
+  },
+  async saveQuestions(qs) {
+    if (Storage.backend === "sqlite") {
+      Storage.db.run("BEGIN");
+      try {
+        const st = Storage.db.prepare("INSERT OR REPLACE INTO questions(" + Q_COLS + ") VALUES " + Q_MARKS);
+        qs.forEach((q) => { st.run(qToRow(q)); });
+        st.free();
+        Storage.db.run("COMMIT");
+      } catch (e) { Storage.db.run("ROLLBACK"); throw e; }
+      Storage.markDirty();
+      return;
+    }
+    return IDB.putMany("questions", qs);
+  },
+  async removeQuestion(id) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("DELETE FROM questions WHERE id=? OR variant_of=?", [id, id]);
+      Storage.run("DELETE FROM vectors WHERE id=?", [id]);
+      return;
+    }
+    await IDB.del("questions", id);
+    return IDB.del("vectors", id);
+  },
+  async saveConcept(c) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("INSERT OR REPLACE INTO concepts(id,name,aliases) VALUES (?,?,?)",
+        [c.id, c.name, JSON.stringify(c.aliases || [])]);
+      return;
+    }
+    return IDB.put("concepts", c);
+  },
+  async saveConcepts(cs) { for (const c of cs) await this.saveConcept(c); },
+  async removeConcept(id) {
+    if (Storage.backend === "sqlite") { Storage.run("DELETE FROM concepts WHERE id=?", [id]); return; }
+    return IDB.del("concepts", id);
+  },
+  async saveSettings(v) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("INSERT OR REPLACE INTO meta(k,v) VALUES('settings',?)", [JSON.stringify(v)]);
+      return;
+    }
+    return IDB.put("meta", { k: "settings", v });
+  },
+
+  /* vectors live as raw little-endian float32 blobs: 1536 bytes each */
   async allVectors() {
-    const rows = await getAll("vectors");
     const m = new Map();
-    rows.forEach((r) => m.set(r.id, r.v));
+    if (Storage.backend === "sqlite") {
+      Storage.all("SELECT id,v FROM vectors").forEach((r) => {
+        const u8 = r.v instanceof Uint8Array ? r.v : new Uint8Array(r.v);
+        const copy = new Uint8Array(u8.length);
+        copy.set(u8);
+        m.set(r.id, new Float32Array(copy.buffer));
+      });
+      return m;
+    }
+    (await IDB.all("vectors")).forEach((r) => m.set(r.id, r.v));
     return m;
   },
-  putVector: (id, v) => putOne("vectors", { id, v }),
-  removeVector: (id) => delOne("vectors", id),
-  clearVectors: () => clearStore("vectors"),
-
-  /* append-only log: lets you rebuild a schedule or refit FSRS later */
-  logReview: (r) => putOne("reviews", r),
-  allReviews: () => getAll("reviews"),
-
-  async wipe() {
-    await Promise.all(["questions", "concepts", "vectors", "reviews", "meta"].map(clearStore));
+  async putVector(id, v) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("INSERT OR REPLACE INTO vectors(id,dim,v) VALUES (?,?,?)",
+        [id, v.length, new Uint8Array(v.buffer, v.byteOffset, v.byteLength)]);
+      return;
+    }
+    return IDB.put("vectors", { id, v });
+  },
+  async removeVector(id) {
+    if (Storage.backend === "sqlite") { Storage.run("DELETE FROM vectors WHERE id=?", [id]); return; }
+    return IDB.del("vectors", id);
+  },
+  async clearVectors() {
+    if (Storage.backend === "sqlite") { Storage.run("DELETE FROM vectors"); return; }
+    return IDB.clear("vectors");
   },
 
-  /** One-time lift from the old localStorage blob. */
+  async logReview(r) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("INSERT INTO reviews(qid,at,grade,elapsed,stability,difficulty,interval,coverage,transcript_len) VALUES (?,?,?,?,?,?,?,?,?)",
+        [r.qid, r.at, r.grade, r.elapsed, r.stability, r.difficulty, r.interval,
+         r.coverage == null ? null : r.coverage, r.transcriptLen || 0]);
+      return;
+    }
+    return IDB.put("reviews", r);
+  },
+  async allReviews() {
+    if (Storage.backend === "sqlite") return Storage.all("SELECT * FROM reviews ORDER BY at");
+    return IDB.all("reviews");
+  },
+
+  /** Aggregates the old code did in JS. Free once the data is in SQL. */
+  async stats() {
+    if (Storage.backend !== "sqlite") return null;
+    const g = (sql) => { const r = Storage.all(sql); return r.length ? r[0] : {}; };
+    return {
+      totals: g("SELECT count(*) questions, count(DISTINCT concept_id) concepts, sum(variant_of IS NOT NULL) variants FROM questions"),
+      due: g("SELECT count(*) n FROM questions WHERE due<=" + now() + " AND variant_of IS NULL").n,
+      reviewed: g("SELECT count(*) n, avg(elapsed) avg_secs, avg(coverage) avg_cov FROM reviews"),
+      byAngle: Storage.all("SELECT angle, count(*) n, avg(stability) avg_stab FROM questions WHERE variant_of IS NULL GROUP BY angle"),
+      weakest: Storage.all(
+        "SELECT c.name, count(q.id) n, count(DISTINCT q.angle) angles, avg(coalesce(q.stability,0)) stab " +
+        "FROM concepts c LEFT JOIN questions q ON q.concept_id=c.id AND q.variant_of IS NULL " +
+        "GROUP BY c.id ORDER BY angles ASC, stab ASC LIMIT 5"),
+      lapsing: Storage.all("SELECT text, lapses FROM questions WHERE lapses>0 ORDER BY lapses DESC LIMIT 5"),
+    };
+  },
+
+  async wipe() {
+    if (Storage.backend === "sqlite") {
+      ["reviews", "vectors", "questions", "concepts", "meta"].forEach((t) => Storage.db.run("DELETE FROM " + t));
+      /* DELETE only frees pages inside the file; VACUUM actually shrinks it */
+      Storage.db.run("VACUUM");
+      Storage.markDirty();
+      await Storage.flush();
+      return;
+    }
+    await Promise.all(["questions", "concepts", "vectors", "reviews", "meta"].map((s) => IDB.clear(s)));
+  },
+
+  /** IndexedDB -> SQLite, once, on the first run after this upgrade. */
+  async migrateIDB() {
+    if (Storage.backend !== "sqlite") return 0;
+    const have = Storage.all("SELECT count(*) c FROM questions");
+    if (have[0].c > 0) return 0;
+    let qs = [], cs = [], vs = [], rs = [];
+    try {
+      qs = await IDB.all("questions"); cs = await IDB.all("concepts");
+      vs = await IDB.all("vectors"); rs = await IDB.all("reviews");
+    } catch (e) { return 0; }
+    if (!qs.length && !cs.length) return 0;
+    await this.saveConcepts(cs);
+    await this.saveQuestions(qs);
+    for (const v of vs) if (v.v) await this.putVector(v.id, v.v);
+    for (const r of rs) await this.logReview(r);
+    await Storage.flush();
+    return qs.length;
+  },
+
+  /** localStorage -> whatever backend is active, once. */
   async migrateLegacy() {
     let raw = null;
-    try { raw = localStorage.getItem(LEGACY_KEY); } catch (e) { return false; }
-    if (!raw) return false;
-    const existing = await getAll("questions");
-    if (existing.length) return false;
+    try { raw = localStorage.getItem(LEGACY_KEY); } catch (e) { return 0; }
+    if (!raw) return 0;
+    const cur = await this.load();
+    if (cur.questions.length) return 0;
     try {
       const old = JSON.parse(raw);
       const qs = (old.questions || []).map((q) => ({
         ...q,
         stability: q.box ? [0.5, 1.4, 3.7, 9, 21, 55][Math.min(q.box, 5)] : null,
-        difficultyF: 5,
-        interval: null,
+        difficultyF: 5, interval: null,
       }));
-      await putAll("questions", qs);
-      await putAll("concepts", old.concepts || []);
-      localStorage.setItem(LEGACY_KEY + ":migrated", "1");
-      return true;
-    } catch (e) { return false; }
+      await this.saveConcepts(old.concepts || []);
+      await this.saveQuestions(qs);
+      if (Storage.backend === "sqlite") await Storage.flush();
+      localStorage.setItem(LEGACY_KEY + ":migrated", String(Date.now()));
+      return qs.length;
+    } catch (e) { return 0; }
   },
 };
 
-/* ======================================================================
-   TIER 2 — export / import.  Vectors are deliberately excluded: they are
-   derived data, they triple the file size, and they regenerate in seconds.
-   ====================================================================== */
+/* ====================== portable JSON backup (Tier 2) ================== */
 const EXPORT_VERSION = 2;
 
 function buildExport(data, reviews) {
   return JSON.stringify({
-    format: "thebank",
-    version: EXPORT_VERSION,
+    format: "thebank", version: EXPORT_VERSION,
     exportedAt: new Date().toISOString(),
     counts: { questions: data.questions.length, concepts: data.concepts.length, reviews: reviews.length },
-    settings: data.settings,
-    concepts: data.concepts,
-    questions: data.questions,
-    reviews,
+    settings: data.settings, concepts: data.concepts, questions: data.questions, reviews,
   }, null, 2);
 }
-
 const stamp = () => new Date().toISOString().slice(0, 10);
 
-async function saveExport(text) {
-  const name = "the-bank-" + stamp() + ".json";
-  /* Chrome / Edge / Android: write straight into a folder you choose */
+async function saveBlob(data, name, mime) {
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
         suggestedName: name,
-        types: [{ description: "JSON backup", accept: { "application/json": [".json"] } }],
+        types: [{ description: "Bank data", accept: { [mime]: ["." + name.split(".").pop()] } }],
       });
       const w = await handle.createWritable();
-      await w.write(text);
-      await w.close();
+      await w.write(data); await w.close();
       return { ok: true, how: "picker", name };
-    } catch (e) {
-      if (e && e.name === "AbortError") return { ok: false, how: "cancelled" };
-    }
+    } catch (e) { if (e && e.name === "AbortError") return { ok: false, how: "cancelled" }; }
   }
-  /* Safari / iOS / everything else */
-  const blob = new Blob([text], { type: "application/json" });
+  const blob = new Blob([data], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = name;
@@ -599,7 +917,6 @@ async function saveExport(text) {
   return { ok: true, how: "download", name };
 }
 
-/** Merge by id, newest wins; unknown ids are added. Never destructive. */
 function mergeImport(current, incoming) {
   const qById = new Map(current.questions.map((q) => [q.id, q]));
   const cById = new Map(current.concepts.map((c) => [c.id, c]));
@@ -613,12 +930,10 @@ function mergeImport(current, incoming) {
     if (sameName) { remap.set(c.id, sameName.id); return; }
     cById.set(c.id, c); cByName.set(cnorm(c.name), c); remap.set(c.id, c.id); newConcepts++;
   });
-
   (incoming.questions || []).forEach((q) => {
     const mapped = { ...q, conceptId: q.conceptId ? (remap.get(q.conceptId) || q.conceptId) : null };
     const mine = qById.get(q.id);
     if (!mine) {
-      /* guard against importing a text duplicate under a fresh id */
       const clash = [...qById.values()].find((x) => lexScore(x.text, mapped.text) >= 92);
       if (clash) { skipped++; return; }
       qById.set(mapped.id, mapped); added++;
@@ -626,53 +941,35 @@ function mergeImport(current, incoming) {
       qById.set(q.id, mapped); updated++;
     } else skipped++;
   });
-
   return {
     data: { questions: [...qById.values()], concepts: [...cById.values()] },
     report: { added, updated, skipped, newConcepts },
   };
 }
 
-/* ======================================================================
-   ML manager — lazy, opt-in, and every call degrades to lexical on failure.
-   ====================================================================== */
+/* ====================== ML manager (unchanged surface) ================= */
 const ML = {
-  state: "off",          /* off | loading | ready | failed */
-  progress: 0,
-  error: null,
-  extractor: null,
-  angleVecs: null,
-  listeners: new Set(),
-  cache: new Map(),      /* text hash -> Float32Array, for the live typing gauge */
-
+  state: "off", progress: 0, error: null, extractor: null, angleVecs: null,
+  listeners: new Set(), cache: new Map(),
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
   emit() { this.listeners.forEach((f) => f(this.state, this.progress, this.error)); },
-
   async enable() {
     if (this.state === "ready" || this.state === "loading") return this.state === "ready";
     this.state = "loading"; this.progress = 0; this.error = null; this.emit();
     try {
       if (!window.__loadTransformers) throw new Error("module loader missing");
-      const ext = await window.__loadTransformers((p) => {
-        if (p && p.status === "progress" && p.total) {
-          this.progress = Math.round((p.loaded / p.total) * 100);
-          this.emit();
-        }
+      this.extractor = await window.__loadTransformers((p) => {
+        if (p && p.status === "progress" && p.total) { this.progress = Math.round((p.loaded / p.total) * 100); this.emit(); }
       });
-      this.extractor = ext;
       this.state = "ready"; this.progress = 100; this.emit();
       this.angleVecs = {};
       for (const a of ANGLES) this.angleVecs[a.id] = await this.embed(a.name + ". " + a.probe);
       this.emit();
       return true;
     } catch (e) {
-      this.state = "failed";
-      this.error = (e && e.message) || "load failed";
-      this.emit();
-      return false;
+      this.state = "failed"; this.error = (e && e.message) || "load failed"; this.emit(); return false;
     }
   },
-
   async embed(text) {
     if (this.state !== "ready" || !text) return null;
     const key = text.slice(0, 400);
@@ -683,12 +980,7 @@ const ML = {
     this.cache.set(key, v);
     return v;
   },
-
-  async embedMany(texts) {
-    const out = [];
-    for (const t of texts) out.push(await this.embed(t));
-    return out;
-  },
+  async embedMany(texts) { const o = []; for (const t of texts) o.push(await this.embed(t)); return o; },
 };
 
 /* ------------------------------- seed ---------------------------------- */
@@ -733,24 +1025,35 @@ function QuestionBank() {
   const [tab, setTab] = useState("add");
   const [prefill, setPrefill] = useState(null);
   const [fatal, setFatal] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [store, setStore] = useState(null);
+  const [migrated, setMigrated] = useState(null);
 
   useEffect(() => ML.on((state, progress, error) => setMlState({ state, progress, error })), []);
 
   useEffect(() => {
+    Storage.onError = (m) => setFatal(m);
     (async () => {
       try {
-        await openDB();
-        await Repo.migrateLegacy();
+        const backend = await Storage.init();
+        const lifted = await Repo.migrateIDB();
+        const legacy = await Repo.migrateLegacy();
         const d = await Repo.load();
         const v = await Repo.allVectors();
         setQuestions(d.questions);
         setConcepts(d.concepts);
         setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
         setVecs(v);
+        setStore(Storage.info());
+        if (lifted) setMigrated({ from: "IndexedDB", n: lifted });
+        else if (legacy) setMigrated({ from: "localStorage", n: legacy });
         setBoot("ready");
+        if (backend === "idb") {
+          setNotice("Running on IndexedDB instead of the SQLite file: " + (Storage.reason || "unknown") + ". Everything works, but there is no single database file to copy out.");
+        }
         if (d.settings && d.settings.mlEnabled) enableML(d.questions, v);
       } catch (e) {
-        setFatal("This browser blocked local storage, so nothing can be saved. Private mode often does this — try a normal window.");
+        setFatal("This browser blocked local storage entirely, so nothing can be saved. Private mode often does this — try a normal window.");
         setBoot("ready");
       }
     })();
@@ -759,11 +1062,11 @@ function QuestionBank() {
   /* ---- writes go through here so IndexedDB and memory never diverge ---- */
   const putQ = useCallback(async (q) => {
     setQuestions((prev) => { const i = prev.findIndex((x) => x.id === q.id); if (i < 0) return [q, ...prev]; const c = [...prev]; c[i] = q; return c; });
-    try { await Repo.saveQuestion(q); } catch (e) { setFatal("Save failed. Your last change is only in memory."); }
+    try { await Repo.saveQuestion(q); setStore(Storage.info()); } catch (e) { setFatal("Save failed. Your last change is only in memory."); }
   }, []);
   const dropQ = useCallback(async (id) => {
     setQuestions((prev) => prev.filter((x) => x.id !== id && x.variantOf !== id));
-    try { await Repo.removeQuestion(id); await Repo.removeVector(id); } catch (e) {}
+    try { await Repo.removeQuestion(id); setStore(Storage.info()); } catch (e) {}
   }, []);
   const putC = useCallback(async (c) => {
     setConcepts((prev) => { const i = prev.findIndex((x) => x.id === c.id); if (i < 0) return [...prev, c]; const n = [...prev]; n[i] = c; return n; });
@@ -802,12 +1105,12 @@ function QuestionBank() {
 
   if (boot === "loading") {
     return <div className="qb"><style>{CSS}</style><div className="wrap">
-      <div className="mast"><div><h1>The <em>Bank</em></h1><p>Opening your local database…</p></div></div>
+      <div className="mast"><div><h1>The <em>Bank</em></h1><p>Opening bank.sqlite3…</p></div></div>
     </div></div>;
   }
 
   const dueCount = questions.filter((q) => !q.variantOf && isDue(q)).length;
-  const ctx = { questions, concepts, settings, vecs, mlReady, putQ, dropQ, putC, putVec, putSettings };
+  const ctx = { questions, concepts, settings, vecs, mlReady, putQ, dropQ, putC, putVec, putSettings, store, refreshStore: () => setStore(Storage.info()) };
 
   return (
     <div className="qb">
@@ -837,6 +1140,15 @@ function QuestionBank() {
         </div>
 
         {fatal && <div className="alert stop" style={{ marginTop: 0, marginBottom: 14 }}><b>Storage problem</b>{fatal}</div>}
+        {notice && <div className="alert warn" style={{ marginTop: 0, marginBottom: 14 }}>
+          <b>Fallback storage</b>{notice}
+          <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setNotice(null)}>Got it</button>
+        </div>}
+        {migrated && <div className="alert ok" style={{ marginTop: 0, marginBottom: 14 }}>
+          <b>Moved into the database file</b>
+          {migrated.n} question{migrated.n === 1 ? "" : "s"} lifted out of {migrated.from} into bank.sqlite3, with review history intact.
+          <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setMigrated(null)}>Dismiss</button>
+        </div>}
         {backfill && (
           <div className="alert ml" style={{ marginTop: 0, marginBottom: 14 }}>
             <b>Indexing your bank</b>
@@ -853,7 +1165,7 @@ function QuestionBank() {
           await Repo.saveConcepts(s.concepts); await Repo.saveQuestions(s.questions);
           setConcepts(s.concepts); setQuestions(s.questions);
         }} />}
-        {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill}
+        {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill} store={store}
           enableML={() => { putSettings({ mlEnabled: true }); enableML(); }}
           setAll={(q, c) => { setQuestions(q); setConcepts(c); }} />}
       </div>
@@ -1675,23 +1987,27 @@ function BankView({ ctx, goAdd, seed }) {
 }
 
 /* =============================== DATA ================================== */
-function DataView({ ctx, mlState, backfill, enableML, setAll }) {
-  const { questions, concepts, settings, vecs, putSettings } = ctx;
+function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
+  const { questions, concepts, settings, vecs, putSettings, refreshStore } = ctx;
   const [msg, setMsg] = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [usage, setUsage] = useState(null);
   const [reviewCount, setReviewCount] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [sqlBusy, setSqlBusy] = useState(false);
   const fileRef = useRef(null);
+  const dbRef = useRef(null);
 
   useEffect(() => {
     if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then((e) => setUsage(e)).catch(() => {});
     Repo.allReviews().then((r) => setReviewCount(r.length)).catch(() => {});
+    Repo.stats().then(setStats).catch(() => {});
   }, [questions]);
 
   async function doExport() {
     const reviews = await Repo.allReviews().catch(() => []);
     const text = buildExport({ questions, concepts, settings }, reviews);
-    const r = await saveExport(text);
+    const r = await saveBlob(text, "the-bank-" + stamp() + ".json", "application/json");
     if (r.ok) setMsg({ k: "ok", t: "Backup written", b: r.how === "picker" ? "Saved as " + r.name + " where you chose." : "Downloaded as " + r.name + ". Vectors are left out — they rebuild in seconds." });
     else setMsg({ k: "warn", t: "Cancelled", b: "Nothing was written." });
   }
@@ -1712,6 +2028,7 @@ function DataView({ ctx, mlState, backfill, enableML, setAll }) {
   }
 
   const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+  const kb = (n) => (n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(2) + " MB");
 
   return (
     <>
@@ -1777,14 +2094,80 @@ function DataView({ ctx, mlState, backfill, enableML, setAll }) {
 
       <div className="card">
         <span className="eyebrow">Where your data lives</span>
-        <div className="kv"><span>Store</span><b>IndexedDB · {DB_NAME}</b></div>
-        <div className="kv"><span>Questions</span><b>{questions.length}</b></div>
-        <div className="kv"><span>Concepts</span><b>{concepts.length}</b></div>
-        <div className="kv"><span>Vectors</span><b>{vecs.size} × 384 floats</b></div>
-        <div className="kv"><span>Review log</span><b>{reviewCount === null ? "…" : reviewCount + " entries"}</b></div>
-        {usage && <div className="kv"><span>Origin usage</span><b>{mb(usage.usage || 0)} of {mb(usage.quota || 0)}</b></div>}
-        <p className="note">All of it is local to this browser. Nothing leaves the device, and there is no account.</p>
+        {store && store.backend === "sqlite" ? (
+          <>
+            <div className="kv"><span>Engine</span><b>SQLite (WASM) · schema v1</b></div>
+            <div className="kv"><span>File</span><b>OPFS / {store.file}</b></div>
+            <div className="kv"><span>File size</span><b>{kb(store.bytes)}{store.dirty ? " · unsaved changes" : ""}</b></div>
+            <div className="kv"><span>Eviction protection</span><b style={{ color: store.persisted ? "var(--clear)" : "var(--warn)" }}>{store.persisted ? "granted" : "not granted"}</b></div>
+            <div className="kv"><span>Tables</span><b>questions · concepts · vectors · reviews · meta</b></div>
+            <div className="kv"><span>Rows</span><b>{questions.length} q · {concepts.length} c · {vecs.size} vec · {reviewCount === null ? "…" : reviewCount} rev</b></div>
+            {usage && <div className="kv"><span>Origin usage</span><b>{mb(usage.usage || 0)} of {mb(usage.quota || 0)}</b></div>}
+            <p className="note">
+              A real SQLite database, held in memory and committed to one file after every change.
+              The write goes through a swap file and commits on close, so a crash mid-save cannot corrupt it.
+              {!store.persisted && " Eviction protection was declined, so a browser under storage pressure may clear this — keep an exported copy."}
+            </p>
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn line" disabled={sqlBusy} onClick={async () => {
+                setSqlBusy(true);
+                const bytes = await Storage.exportFile();
+                setSqlBusy(false);
+                if (!bytes) return setMsg({ k: "warn", t: "Not available", b: "SQLite is not the active backend." });
+                const r = await saveBlob(bytes, "bank-" + stamp() + ".sqlite3", "application/vnd.sqlite3");
+                refreshStore();
+                setMsg(r.ok
+                  ? { k: "ok", t: "Database file written", b: r.name + " — open it in DB Browser for SQLite or query it with the sqlite3 CLI." }
+                  : { k: "warn", t: "Cancelled", b: "Nothing was written." });
+              }}>{sqlBusy ? "Working…" : "Download the .sqlite3 file"}</button>
+              <button className="btn line" onClick={() => dbRef.current && dbRef.current.click()}>Restore from .sqlite3</button>
+            </div>
+            <input ref={dbRef} type="file" accept=".sqlite3,.sqlite,.db,application/vnd.sqlite3,application/octet-stream" style={{ display: "none" }}
+              onChange={async (e) => {
+                const f = e.target.files && e.target.files[0]; e.target.value = "";
+                if (!f) return;
+                try {
+                  await Storage.importFile(await f.arrayBuffer());
+                  const d = await Repo.load();
+                  setAll(d.questions, d.concepts);
+                  refreshStore();
+                  setMsg({ k: "ok", t: "Database replaced", b: "Loaded " + d.questions.length + " questions from " + f.name + ". This overwrote the previous file." });
+                } catch (err) {
+                  setMsg({ k: "warn", t: "Couldn't open that file", b: (err && err.message) || "Pick a .sqlite3 file exported from The Bank." });
+                }
+              }} />
+            <p className="hint">Restoring replaces the whole database rather than merging. Use the JSON import below when you want to combine two devices.</p>
+          </>
+        ) : (
+          <>
+            <div className="kv"><span>Engine</span><b>IndexedDB (fallback)</b></div>
+            <div className="kv"><span>Reason</span><b>{store && store.reason ? store.reason : "unknown"}</b></div>
+            <div className="kv"><span>Rows</span><b>{questions.length} q · {concepts.length} c · {vecs.size} vec</b></div>
+            {usage && <div className="kv"><span>Origin usage</span><b>{mb(usage.usage || 0)} of {mb(usage.quota || 0)}</b></div>}
+            <p className="note">
+              The SQLite file could not be opened here, so the app is using IndexedDB. Nothing is lost and every feature
+              works — you just cannot copy out a single database file. OPFS needs Safari 16.4+, Chrome 108+ or Firefox 111+,
+              and it is unavailable over file:// and in some private modes.
+            </p>
+          </>
+        )}
       </div>
+
+      {stats && stats.reviewed && stats.reviewed.n > 0 && (
+        <div className="card">
+          <span className="eyebrow">What the review log says</span>
+          <div className="kv"><span>Reviews recorded</span><b>{stats.reviewed.n}</b></div>
+          <div className="kv"><span>Average answer length</span><b>{Math.round(stats.reviewed.avg_secs || 0)}s</b></div>
+          {stats.reviewed.avg_cov != null && <div className="kv"><span>Average beat coverage</span><b>{Math.round(stats.reviewed.avg_cov * 100)}%</b></div>}
+          {stats.weakest && stats.weakest.length > 0 && (
+            <div className="kv"><span>Weakest concept</span><b>{stats.weakest[0].name} · {stats.weakest[0].angles}/6</b></div>
+          )}
+          {stats.lapsing && stats.lapsing.length > 0 && (
+            <p className="note">Most blanked on: “{stats.lapsing[0].text}” — {stats.lapsing[0].lapses} time{stats.lapsing[0].lapses === 1 ? "" : "s"}.</p>
+          )}
+          <p className="hint">Aggregated with SQL over the reviews table, which is append-only — nothing about your history is overwritten.</p>
+        </div>
+      )}
 
       <div className="card">
         <span className="eyebrow">Backup and transfer</span>
@@ -1805,9 +2188,9 @@ function DataView({ ctx, mlState, backfill, enableML, setAll }) {
         <span className="eyebrow">Start over</span>
         {confirmReset ? (
           <>
-            <p className="note" style={{ marginTop: 0 }}>This deletes every question, concept, vector, and review score in this browser. Export first if you want them back.</p>
+            <p className="note" style={{ marginTop: 0 }}>This truncates every table in bank.sqlite3. Export first if you want them back.</p>
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], []); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "The bank is empty." }); }}>Delete everything</button>
+              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], []); refreshStore(); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "The bank is empty and the file has been rewritten." }); }}>Delete everything</button>
               <button className="btn line" onClick={() => setConfirmReset(false)}>Keep it</button>
             </div>
           </>
