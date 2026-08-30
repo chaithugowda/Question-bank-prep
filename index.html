@@ -567,6 +567,7 @@ CREATE TABLE IF NOT EXISTS questions (
   text TEXT NOT NULL,
   answer TEXT,
   concept_id TEXT REFERENCES concepts(id) ON DELETE SET NULL,
+  language TEXT,
   angle TEXT DEFAULT 'def',
   difficulty TEXT DEFAULT 'medium',
   due INTEGER, created INTEGER, last INTEGER,
@@ -597,7 +598,7 @@ const IDB_NAME = "qbank";
 
 /* ---- row mapping: snake_case on disk, camelCase in the app ---- */
 const rowToQ = (r) => ({
-  id: r.id, text: r.text, answer: r.answer || "", conceptId: r.concept_id || null,
+  id: r.id, text: r.text, answer: r.answer || "", conceptId: r.concept_id || null, language: r.language || "",
   angle: r.angle || "def", difficulty: r.difficulty || "medium",
   due: r.due, created: r.created, last: r.last,
   reps: r.reps || 0, lapses: r.lapses || 0,
@@ -605,7 +606,7 @@ const rowToQ = (r) => ({
   variantOf: r.variant_of || null,
 });
 const qToRow = (q) => [
-  q.id, q.text, q.answer || "", q.conceptId || null, q.angle || "def", q.difficulty || "medium",
+  q.id, q.text, q.answer || "", q.conceptId || null, q.language || "", q.angle || "def", q.difficulty || "medium",
   q.due || null, q.created || null, q.last || null,
   q.reps || 0, q.lapses || 0,
   q.stability == null ? null : q.stability,
@@ -613,8 +614,8 @@ const qToRow = (q) => [
   q.interval == null ? null : q.interval,
   q.variantOf || null,
 ];
-const Q_COLS = "id,text,answer,concept_id,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of";
-const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+const Q_COLS = "id,text,answer,concept_id,language,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of";
+const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 /* ====================== fallback backend: IndexedDB ==================== */
 let _idb = null;
@@ -687,6 +688,8 @@ const Storage = {
       const buf = new Uint8Array(await file.arrayBuffer());
       this.db = buf.byteLength ? new SQL.Database(buf) : new SQL.Database();
       this.db.run(SCHEMA);
+      /* Additive migration: preserve all existing questions while adding language tags. */
+      try { this.db.run("ALTER TABLE questions ADD COLUMN language TEXT"); } catch (e) {}
       this.db.run("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)", [String(SCHEMA_VERSION)]);
       this.bytes = buf.byteLength;
       this.backend = "sqlite";
@@ -756,6 +759,8 @@ const Storage = {
     const found = t.length ? t[0].values[0][0] : 0;
     if (found < 2) { probe.close(); throw new Error("that file is not a Bank database"); }
     probe.run(SCHEMA);
+    /* Additive migration for older imported Bank databases. */
+    try { probe.run("ALTER TABLE questions ADD COLUMN language TEXT"); } catch (e) {}
     if (this.db) this.db.close();
     this.db = probe;
     this.dirty = true;
@@ -1110,7 +1115,7 @@ const STARTER = () => {
   return {
     concepts: cs,
     questions: raw.map(([text, concept, angle, answer], i) => ({
-      id: uid(), text, conceptId: byName(concept), angle, answer,
+      id: uid(), text, conceptId: byName(concept), language: concept === "SQL" ? "SQL" : concept === "JavaScript" ? "JavaScript" : concept === "React" ? "React" : "", angle, answer,
       difficulty: i % 3 === 0 ? "hard" : "medium",
       due: t, created: t - i * 1000, last: null,
       reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null, variantOf: null,
@@ -1311,6 +1316,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
   const [answer, setAnswer] = useState("");
   const [conceptInput, setConceptInput] = useState("");
   const [conceptId, setConceptId] = useState(null);
+  const [language, setLanguage] = useState("");
   const [angle, setAngle] = useState(null);
   const [angleAuto, setAngleAuto] = useState(null);
   const [difficulty, setDifficulty] = useState("medium");
@@ -1328,6 +1334,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     if (!prefill) return;
     setText(prefill.text || "");
     setConceptId(prefill.conceptId || null);
+    setLanguage(prefill.language || "");
     setTouchedConcept(true);
     if (prefill.angle) { setAngle(prefill.angle); }
     setConceptInput("");
@@ -1343,6 +1350,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     setText(editItem.text || "");
     setAnswer(editItem.answer || "");
     setConceptId(editItem.conceptId || null);
+    setLanguage(editItem.language || "");
     setAngle(editItem.angle || null);
     setDifficulty(editItem.difficulty || "medium");
     setConceptInput("");
@@ -1353,7 +1361,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
 
   function cancelEdit() {
     setEditingId(null);
-    setText(""); setAnswer(""); setConceptId(null); setAngle(null); setDifficulty("medium");
+    setText(""); setAnswer(""); setConceptId(null); setLanguage(""); setAngle(null); setDifficulty("medium");
     setConceptInput(""); setTouchedConcept(false); setOverride(false);
     setDebounced(""); setLiveVec(null);
     clearEdit();
@@ -1486,7 +1494,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     if (editingId) {
       const prev = questions.find((x) => x.id === editingId) || {};
       const textChanged = prev.text !== clean;
-      const q = { ...prev, text: clean, answer: answer.trim(), conceptId, angle: angle || "def", difficulty };
+      const q = { ...prev, text: clean, answer: answer.trim(), conceptId, language, angle: angle || "def", difficulty };
       await putQ(q);
       if (mlReady) {
         const v = textChanged ? (liveVec || (await ML.embed(clean))) : (liveVec || vecs.get(editingId));
@@ -1502,14 +1510,14 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     }
 
     const q = {
-      id: uid(), text: clean, answer: answer.trim(), conceptId, angle: angle || "def", difficulty,
+      id: uid(), text: clean, answer: answer.trim(), conceptId, language, angle: angle || "def", difficulty,
       due: now(), created: now(), last: null,
       reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null,
       variantOf: asVariant && top ? top.q.id : null,
     };
     await putQ(q);
     if (mlReady) { const v = liveVec || (await ML.embed(clean)); if (v) putVec(q.id, v); }
-    setText(""); setAnswer(""); setAngle(null); setOverride(false); setDebounced(""); setLiveVec(null);
+    setText(""); setAnswer(""); setLanguage(""); setAngle(null); setOverride(false); setDebounced(""); setLiveVec(null);
     setTouchedConcept(false);
     setFlash({
       kind: "ok",
@@ -1657,6 +1665,25 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
                 )}
               </>
             )}
+          </div>
+
+          <div className="card">
+            <span className="eyebrow">Language</span>
+            <select className="t" value={language} onChange={(e) => setLanguage(e.target.value)}>
+              <option value="">Select a language…</option>
+              <option value="C#">C#</option>
+              <option value=".NET">.NET</option>
+              <option value="JavaScript">JavaScript</option>
+              <option value="TypeScript">TypeScript</option>
+              <option value="React">React</option>
+              <option value="SQL">SQL</option>
+              <option value="Python">Python</option>
+              <option value="Java">Java</option>
+              <option value="C++">C++</option>
+              <option value="Go">Go</option>
+              <option value="Rust">Rust</option>
+              <option value="Other">Other</option>
+            </select>
           </div>
 
           <div className="card">
@@ -2179,6 +2206,7 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
               <div className="item-q">{item.text}</div>
               <div className="item-meta">
                 <span>{c ? c.name : "unfiled"}</span><span className="dot" />
+                <span>{item.language || "no language"}</span><span className="dot" />
                 <span>{angleName(item.angle)}</span><span className="dot" />
                 <span>{strengthOf(item)}{item.stability ? " · " + Math.round(item.stability) + "d" : ""}</span><span className="dot" />
                 <span>{fmtDue(item)}</span>
