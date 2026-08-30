@@ -69,53 +69,120 @@ const CSS = `
   --paper:#E7EAF0; --card:#FFFFFF; --ink:#141A26; --soft:#5C6478;
   --rule:#D2D8E4; --indigo:#2D3BD4; --clear:#0C7F5C; --warn:#A96B04;
   --collide:#C42B41; --gold:#B48A16; --violet:#6B3FA0;
+  --surface2:#FBFCFD; --track:#DFE3EB; --chipbg:#F4F6F9; --divider:#EEF0F5;
+  --placeholder:#9AA1B2; --ledoff:#C3C9D6; --cellbg:#F3F5F9;
+  --warnbg:#FDF6E7; --warnborder:#EBD9A8; --warntext:#6B4A02;
+  --stopbg:#FCEDEF; --stopborder:#F0C6CD; --stoptext:#8C1526;
+  --okbg:#EAF6F1; --okborder:#BFE0D3; --oktext:#08503B;
+  --mlbg:#F3EFFA; --mlborder:#DACCEF; --mltext:#3F2168;
+  --shadow-sm:rgba(20,26,38,.05); --shadow-lg:rgba(20,26,38,.4);
+  --solid:#141A26; --solid2:#232B44; --on-solid:#FFFFFF;
+  --grad:linear-gradient(90deg,var(--indigo),var(--violet));
   --grotesk:'Space Grotesk',Futura,'Trebuchet MS',sans-serif;
   --serif:'Newsreader',Georgia,'Iowan Old Style',serif;
   --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
-  background:var(--paper); color:var(--ink); font-family:var(--grotesk);
+  background:
+    radial-gradient(900px 460px at 100% -10%, rgba(45,59,212,.09), transparent 62%),
+    var(--paper);
+  color:var(--ink); font-family:var(--grotesk);
   min-height:100vh; padding:0 0 96px; -webkit-font-smoothing:antialiased;
+  transition:background-color .2s ease, color .2s ease;
 }
+.qb[data-theme="dark"] {
+  --paper:#10131C; --card:#181C29; --ink:#EAECF3; --soft:#8A93AC;
+  --rule:#2B3145; --indigo:#8B96FF; --clear:#3FDA9E; --warn:#E3B248;
+  --collide:#FF7A8A; --gold:#E6C25E; --violet:#BA9CE8;
+  --surface2:#12151F; --track:#262C3E; --chipbg:#1E2333; --divider:#252B3D;
+  --placeholder:#5C6478; --ledoff:#3A4157; --cellbg:#1B2032;
+  --warnbg:#2B240F; --warnborder:#4A3D14; --warntext:#F0C766;
+  --stopbg:#2E141A; --stopborder:#5A2530; --stoptext:#FF9CA8;
+  --okbg:#0F2A21; --okborder:#1E4B3B; --oktext:#5FE3B8;
+  --mlbg:#211A38; --mlborder:#3B2E5C; --mltext:#CBB6F2;
+  --shadow-sm:rgba(0,0,0,.28); --shadow-lg:rgba(0,0,0,.6);
+  --solid:#8B96FF; --solid2:#BA9CE8; --on-solid:#12151F;
+  background:
+    radial-gradient(900px 460px at 100% -10%, rgba(139,150,255,.10), transparent 62%),
+    var(--paper);
+}
+.qb[data-theme="dark"] .grade button{background:var(--card);}
+.qb[data-theme="dark"] textarea.q:focus, .qb[data-theme="dark"] input.t:focus{background:var(--card);}
 .qb *{box-sizing:border-box;}
 .qb button{font-family:var(--grotesk); cursor:pointer;}
 .qb :focus-visible{outline:2px solid var(--indigo); outline-offset:2px;}
-.wrap{max-width:760px; margin:0 auto; padding:0 18px;}
+.wrap{max-width:520px; margin:0 auto; padding:60px clamp(14px,4vw,18px); width:100%;}
 
-.mast{padding:26px 0 12px; display:flex; align-items:flex-start; justify-content:space-between; gap:14px;}
-.mast h1{font-size:26px; font-weight:700; letter-spacing:-.03em; margin:0; line-height:1;}
-.mast h1 em{font-style:normal; color:var(--indigo);}
-.mast p{font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+/* ---- app shell: single column on mobile, sidebar + canvas from tablet up ---- */
+.shell{max-width:1180px; margin:0 auto; padding:0 clamp(14px,4vw,32px); width:100%;}
+.sidebar{padding:24px 0 8px;}
+.main{padding:2px 0 72px; min-width:0;}
+@media (min-width:900px){
+  .shell{display:flex; align-items:flex-start;}
+  .sidebar{width:236px; flex-shrink:0; position:sticky; top:28px;
+    padding:40px 30px 40px 0; border-right:1px solid var(--rule); margin-right:36px;}
+  .main{flex:1; max-width:720px; padding:40px 0 80px;}
+}
+
+.brand{margin-bottom:20px;}
+.mast-eyebrow{display:block; font-family:var(--mono); font-size:9.5px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--soft); margin-bottom:8px;}
+.brand h1{font-size:29px; font-weight:700; letter-spacing:-.035em; margin:0; line-height:1;}
+.brand h1 em{font-style:normal; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent;}
+.brand p{font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
   color:var(--soft); margin:9px 0 0;}
+
+.side-stats{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:18px;}
+
+.stamp{border:1.5px dashed var(--indigo); border-radius:10px; padding:6px 13px; text-align:center;
+  transform:rotate(-2deg); background:rgba(45,59,212,.05); flex-shrink:0;}
+.stamp b{display:block; font-family:var(--grotesk); font-size:22px; font-weight:700; line-height:1;
+  letter-spacing:-.03em; font-variant-numeric:tabular-nums; color:var(--indigo);}
+.stamp span{display:block; font-family:var(--mono); font-size:8.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--soft); margin-top:3px; white-space:nowrap;}
+.stamp.zero{border-color:var(--rule); background:transparent;}
+.stamp.zero b{color:var(--soft);}
 
 .mlpill{flex-shrink:0; font-family:var(--mono); font-size:9.5px; letter-spacing:.1em;
   text-transform:uppercase; border:1px solid var(--rule); background:var(--card);
   border-radius:99px; padding:6px 10px; color:var(--soft); display:flex; align-items:center; gap:6px;}
-.mlpill .led{width:6px; height:6px; border-radius:99px; background:#C3C9D6;}
+.mlpill .led{width:6px; height:6px; border-radius:99px; background:var(--ledoff);}
 .mlpill.on{border-color:var(--violet); color:var(--violet);}
 .mlpill.on .led{background:var(--violet);}
 .mlpill.load .led{background:var(--warn); animation:pulse 1.1s ease-in-out infinite;}
 @keyframes pulse{50%{opacity:.25;}}
 
+.theme-toggle{flex-shrink:0; font-family:var(--mono); font-size:9.5px; letter-spacing:.1em;
+  text-transform:uppercase; border:1px solid var(--rule); background:var(--card);
+  border-radius:99px; padding:6px 10px; color:var(--soft);}
+.theme-toggle:hover{border-color:var(--indigo); color:var(--indigo);}
+
 .tabs{display:flex; gap:3px; background:var(--card); border:1px solid var(--rule);
-  border-radius:11px; padding:4px; margin:6px 0 18px;}
+  border-radius:11px; padding:4px; margin:6px 0 18px; box-shadow:0 1px 2px var(--shadow-sm);}
 .tabs button{flex:1; border:0; background:transparent; color:var(--soft); font-size:12px;
   font-weight:500; padding:9px 2px; border-radius:8px;}
-.tabs button.on{background:var(--ink); color:#fff;}
+.tabs button.on{background:linear-gradient(135deg,var(--solid),var(--solid2)); color:var(--on-solid);}
 .tabs .badge{font-family:var(--mono); font-size:10px; margin-left:4px; opacity:.75;}
+@media (min-width:900px){
+  .sidebar .tabs{flex-direction:column; background:transparent; border:0; padding:0;
+    box-shadow:none; gap:2px; margin:4px 0 0;}
+  .sidebar .tabs button{flex:none; text-align:left; padding:10px 12px; font-size:13px; border-radius:9px;}
+  .sidebar .tabs button.on{box-shadow:0 6px 16px -9px var(--shadow-lg);}
+}
 
-.card{background:var(--card); border:1px solid var(--rule); border-radius:14px; padding:18px;}
+.card{background:var(--card); border:1px solid var(--rule); border-radius:14px; padding:18px;
+  box-shadow:0 1px 2px var(--shadow-sm), 0 10px 26px -20px var(--shadow-lg);}
 .card + .card{margin-top:14px;}
 .eyebrow{font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
   color:var(--soft); display:block; margin-bottom:9px;}
 
-textarea.q, input.t{width:100%; border:1px solid var(--rule); border-radius:10px; background:#FBFCFD;
+textarea.q, input.t{width:100%; border:1px solid var(--rule); border-radius:10px; background:var(--surface2);
   padding:12px 13px; font-family:var(--serif); font-size:17.5px; color:var(--ink); resize:vertical;}
 input.t{font-family:var(--grotesk); font-size:14.5px;}
 textarea.q{min-height:88px; line-height:1.45;}
-textarea.q:focus, input.t:focus{background:#fff; border-color:var(--indigo);}
-textarea.q::placeholder, input.t::placeholder{color:#9AA1B2;}
+textarea.q:focus, input.t:focus{background:var(--card); border-color:var(--indigo);}
+textarea.q::placeholder, input.t::placeholder{color:var(--placeholder);}
 textarea.sm{min-height:66px; font-size:15px;}
 select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:11px 12px;
-  font-size:14px; background:#FBFCFD; font-family:var(--grotesk); color:var(--ink);}
+  font-size:14px; background:var(--surface2); font-family:var(--grotesk); color:var(--ink);}
 
 /* gauge */
 .gauge{margin-top:14px;}
@@ -128,7 +195,7 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 .gauge-verdict small{font-family:var(--mono); font-size:10px; color:var(--soft);
   letter-spacing:.06em; text-transform:uppercase;}
 .ticks{display:flex; gap:2px; margin-top:11px;}
-.ticks i{flex:1; height:12px; border-radius:2px; background:#DFE3EB;
+.ticks i{flex:1; height:12px; border-radius:2px; background:var(--track);
   transition:background .18s ease, transform .18s ease;}
 .ticks i.lit{transform:scaleY(1.34);}
 .ticks-scale{display:flex; justify-content:space-between; font-family:var(--mono); font-size:9.5px;
@@ -139,7 +206,7 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 
 .near{margin-top:14px; border-top:1px dashed var(--rule); padding-top:12px;}
 .near-row{display:flex; gap:11px; align-items:baseline; padding:8px 0;}
-.near-row + .near-row{border-top:1px solid #EEF0F5;}
+.near-row + .near-row{border-top:1px solid var(--divider);}
 .pct{font-family:var(--mono); font-size:12px; font-weight:500; min-width:38px;
   font-variant-numeric:tabular-nums;}
 .near-q{font-family:var(--serif); font-size:15px; line-height:1.38; flex:1;}
@@ -147,19 +214,19 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
   letter-spacing:.1em; margin-top:3px;}
 
 .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:9px;}
-.chip{border:1px solid var(--rule); background:#F4F6F9; color:var(--ink); border-radius:99px;
+.chip{border:1px solid var(--rule); background:var(--chipbg); color:var(--ink); border-radius:99px;
   padding:6px 11px; font-size:12.5px; font-weight:500;}
-.chip.on{background:var(--ink); color:#fff; border-color:var(--ink);}
+.chip.on{background:var(--solid); color:var(--on-solid); border-color:var(--solid);}
 .chip.ghost{background:transparent; border-style:dashed; color:var(--soft);}
 .chip .x{opacity:.55; margin-left:6px;}
 .chip .conf{font-family:var(--mono); font-size:9.5px; opacity:.6; margin-left:6px;}
 
-.btn{border:1px solid var(--ink); background:var(--ink); color:#fff; border-radius:10px;
-  padding:12px 16px; font-size:14px; font-weight:500; width:100%;}
+.btn{border:1px solid var(--solid); background:var(--solid); color:var(--on-solid); border-radius:10px;
+  padding:12px 16px; font-size:14px; font-weight:500; width:100%; box-shadow:0 1px 2px var(--shadow-sm);}
 .btn[disabled]{opacity:.34; cursor:not-allowed;}
 .btn.line{background:transparent; color:var(--ink);}
-.btn.danger{background:var(--collide); border-color:var(--collide);}
-.btn.violet{background:var(--violet); border-color:var(--violet);}
+.btn.danger{background:var(--collide); border-color:var(--collide); color:#fff;}
+.btn.violet{background:var(--violet); border-color:var(--violet); color:#fff;}
 .btn.tiny{width:auto; padding:7px 12px; font-size:12.5px; border-radius:8px;}
 .row{display:flex; gap:8px; flex-wrap:wrap;}
 .row .btn{flex:1;}
@@ -168,15 +235,15 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 .note b{color:var(--ink);}
 .hint{font-size:12px; color:var(--soft); margin-top:6px; line-height:1.45;}
 .alert{border-radius:10px; padding:11px 13px; font-size:13.5px; line-height:1.45; margin-top:12px;}
-.alert.warn{background:#FDF6E7; border:1px solid #EBD9A8; color:#6B4A02;}
-.alert.stop{background:#FCEDEF; border:1px solid #F0C6CD; color:#8C1526;}
-.alert.ok{background:#EAF6F1; border:1px solid #BFE0D3; color:#08503B;}
-.alert.info{background:#F1F3F8; border:1px solid var(--rule); color:var(--ink);}
-.alert.ml{background:#F3EFFA; border:1px solid #DACCEF; color:#3F2168;}
+.alert.warn{background:var(--warnbg); border:1px solid var(--warnborder); color:var(--warntext);}
+.alert.stop{background:var(--stopbg); border:1px solid var(--stopborder); color:var(--stoptext);}
+.alert.ok{background:var(--okbg); border:1px solid var(--okborder); color:var(--oktext);}
+.alert.info{background:var(--chipbg); border:1px solid var(--rule); color:var(--ink);}
+.alert.ml{background:var(--mlbg); border:1px solid var(--mlborder); color:var(--mltext);}
 .alert b{display:block; margin-bottom:3px;}
 .field + .field{margin-top:15px;}
 
-.bar{height:5px; background:#DFE3EB; border-radius:99px; overflow:hidden; margin-top:9px;}
+.bar{height:5px; background:var(--track); border-radius:99px; overflow:hidden; margin-top:9px;}
 .bar i{display:block; height:100%; background:var(--violet); border-radius:99px; transition:width .3s ease;}
 
 .item{border-top:1px solid var(--rule); padding:15px 0;}
@@ -192,25 +259,25 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 .rev-q{font-family:var(--serif); font-size:23px; line-height:1.32; letter-spacing:-.01em;}
 .timer{font-family:var(--mono); font-size:34px; font-weight:500; font-variant-numeric:tabular-nums;
   letter-spacing:-.02em;}
-.timer-bar{height:4px; background:#DFE3EB; border-radius:99px; overflow:hidden; margin-top:10px;}
+.timer-bar{height:4px; background:var(--track); border-radius:99px; overflow:hidden; margin-top:10px;}
 .timer-bar i{display:block; height:100%; background:var(--indigo); border-radius:99px; transition:width .9s linear;}
 .grade{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;}
-.grade button{border:1px solid var(--rule); background:#fff; border-radius:10px; padding:12px 8px; text-align:left;}
+.grade button{border:1px solid var(--rule); background:var(--card); border-radius:10px; padding:12px 8px; text-align:left;}
 .grade button.rec{border-color:var(--indigo); box-shadow:0 0 0 2px rgba(45,59,212,.11);}
 .grade b{display:block; font-size:13.5px;}
 .grade small{font-family:var(--mono); font-size:9.5px; color:var(--soft); letter-spacing:.07em; text-transform:uppercase;}
 
 .mic{display:flex; align-items:center; gap:10px; margin-top:14px;}
-.mic-orb{width:44px; height:44px; border-radius:99px; border:1px solid var(--rule); background:#F4F6F9;
+.mic-orb{width:44px; height:44px; border-radius:99px; border:1px solid var(--rule); background:var(--chipbg);
   display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:18px;}
 .mic-orb.live{background:var(--collide); border-color:var(--collide); color:#fff; animation:pulse 1.4s ease-in-out infinite;}
 .transcript{font-family:var(--serif); font-size:15px; line-height:1.5; color:var(--soft);
-  margin-top:12px; padding:11px 13px; background:#FBFCFD; border:1px solid var(--rule); border-radius:10px;
+  margin-top:12px; padding:11px 13px; background:var(--surface2); border:1px solid var(--rule); border-radius:10px;
   max-height:170px; overflow:auto;}
-.transcript em{font-style:normal; color:#9AA1B2;}
+.transcript em{font-style:normal; color:var(--placeholder);}
 
 .beat{display:flex; gap:9px; align-items:flex-start; padding:9px 0;}
-.beat + .beat{border-top:1px solid #EEF0F5;}
+.beat + .beat{border-top:1px solid var(--divider);}
 .beat-mark{font-family:var(--mono); font-size:12px; width:20px; flex-shrink:0; text-align:center; padding-top:1px;}
 .beat-txt{font-family:var(--serif); font-size:15px; line-height:1.42; flex:1;}
 .beat.miss .beat-txt{color:var(--collide);}
@@ -222,16 +289,18 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 .cov-name small{display:block; font-family:var(--mono); font-size:9.5px; color:var(--soft);
   letter-spacing:.08em; text-transform:uppercase; font-weight:400; margin-top:2px;}
 .cells{display:flex; gap:3px;}
-.cell{width:26px; height:26px; border-radius:6px; border:1px solid var(--rule); background:#F3F5F9;
+.cell{width:26px; height:26px; border-radius:6px; border:1px solid var(--rule); background:var(--cellbg);
   font-family:var(--mono); font-size:10px; color:var(--soft); display:flex; align-items:center;
   justify-content:center; padding:0;}
-.cell.has{background:var(--ink); border-color:var(--ink); color:#fff;}
+.cell.has{background:var(--solid); border-color:var(--solid); color:var(--on-solid);}
 .cell.strong{background:var(--clear); border-color:var(--clear); color:#fff;}
 .legend{display:flex; flex-wrap:wrap; gap:12px; margin-top:14px; font-family:var(--mono);
   font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--soft);}
 
-.stat-row{display:flex; gap:8px; margin-bottom:14px;}
-.stat{flex:1; background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:12px;}
+.stat-row{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;}
+.stat{flex:1 1 100px; min-width:100px; background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:12px;
+  position:relative; overflow:hidden; box-shadow:0 1px 2px var(--shadow-sm), 0 8px 20px -17px var(--shadow-lg);}
+.stat::before{content:""; position:absolute; top:0; left:0; right:0; height:3px; background:var(--grad);}
 .stat b{display:block; font-size:24px; font-weight:700; letter-spacing:-.03em; line-height:1;
   font-variant-numeric:tabular-nums;}
 .stat small{font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase;
@@ -242,13 +311,20 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 .empty p{font-size:14px; color:var(--soft); line-height:1.5; margin:0 auto 16px; max-width:340px;}
 
 .kv{display:flex; justify-content:space-between; gap:12px; padding:9px 0; font-size:13.5px;
-  border-top:1px solid #EEF0F5;}
+  border-top:1px solid var(--divider);}
 .kv:first-of-type{border-top:0;}
 .kv span{color:var(--soft);}
 .kv b{font-family:var(--mono); font-size:12px; font-weight:500;}
 
 @media (prefers-reduced-motion: reduce){ .qb *{transition:none !important; animation:none !important;} }
-@media (max-width:420px){ .cell{width:22px; height:22px;} .mast h1{font-size:23px;} .tabs button{font-size:11px;} }
+@media (max-width:600px){
+  .sidebar{padding:18px 0 10px;}
+  .side-stats{margin-bottom:14px;}
+  .card{padding:15px;}
+  .stat-row{gap:6px;}
+}
+@media (max-width:420px){ .cell{width:22px; height:22px;} .brand h1{font-size:23px;} .tabs button{font-size:11px;}
+  .stamp{padding:6px 11px;} .stamp b{font-size:20px;} }
 `;
 
 /* ---------------------------- lexical layer ---------------------------- */
@@ -1042,7 +1118,7 @@ const STARTER = () => {
   };
 };
 
-const DEFAULT_SETTINGS = { talkTarget: 90, retention: 0.9, mlEnabled: false, voice: true };
+const DEFAULT_SETTINGS = { talkTarget: 90, retention: 0.9, mlEnabled: false, voice: true, theme: "light" };
 
 /* ============================== app shell ============================== */
 function QuestionBank() {
@@ -1055,6 +1131,7 @@ function QuestionBank() {
   const [backfill, setBackfill] = useState(null);
   const [tab, setTab] = useState("add");
   const [prefill, setPrefill] = useState(null);
+  const [editItem, setEditItem] = useState(null);
   const [fatal, setFatal] = useState(null);
   const [notice, setNotice] = useState(null);
   const [store, setStore] = useState(null);
@@ -1076,6 +1153,10 @@ function QuestionBank() {
         setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
         setVecs(v);
         setStore(Storage.info());
+        /* smart default: land on Review when there's a queue to clear,
+           otherwise Add — so opening the app is never a dead end. */
+        const dueNow = d.questions.filter((q) => !q.variantOf && isDue(q)).length;
+        setTab(dueNow > 0 ? "review" : "add");
         if (lifted) setMigrated({ from: "IndexedDB", n: lifted });
         else if (legacy) setMigrated({ from: "localStorage", n: legacy });
         setBoot("ready");
@@ -1135,8 +1216,8 @@ function QuestionBank() {
   const mlReady = mlState.state === "ready" && !backfill;
 
   if (boot === "loading") {
-    return <div className="qb"><style>{CSS}</style><div className="wrap">
-      <div className="mast"><div><h1>The <em>Bank</em></h1><p>Opening bank.sqlite3…</p></div></div>
+    return <div className="qb" data-theme={settings.theme || "light"}><style>{CSS}</style><div className="wrap">
+      <div className="brand"><h1>The <em>Bank</em></h1><p>Opening bank.sqlite3…</p></div>
     </div></div>;
   }
 
@@ -1144,41 +1225,57 @@ function QuestionBank() {
   const ctx = { questions, concepts, settings, vecs, mlReady, putQ, dropQ, putC, putVec, putSettings, store, refreshStore: () => setStore(Storage.info()) };
 
   return (
-    <div className="qb">
+    <div className="qb" data-theme={settings.theme || "light"}>
       <style>{CSS}</style>
-      <div className="wrap">
-        <div className="mast">
-          <div>
+      <div className="shell">
+        <aside className="sidebar">
+          <div className="brand">
+            <span className="mast-eyebrow">Local file · no sync</span>
             <h1>The <em>Bank</em></h1>
             <p>{questions.length} questions · {concepts.length} concepts · no duplicates</p>
           </div>
-          <button
-            className={"mlpill " + (mlState.state === "ready" ? "on" : mlState.state === "loading" ? "load" : "")}
-            onClick={() => setTab("data")}
-            title="Semantic matching status"
-          >
-            <span className="led" />
-            {mlState.state === "ready" ? (backfill ? "indexing" : "semantic") : mlState.state === "loading" ? mlState.progress + "%" : mlState.state === "failed" ? "lexical" : "lexical"}
-          </button>
-        </div>
 
-        <div className="tabs" role="tablist">
-          {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["bank", "Bank"], ["data", "Data"]].map(([k, label]) => (
-            <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-              {label}{k === "review" && dueCount > 0 && <span className="badge">{dueCount}</span>}
+          <div className="side-stats">
+            <div className={"stamp" + (dueCount === 0 ? " zero" : "")} title="Questions due for review today">
+              <b>{dueCount}</b>
+              <span>due today</span>
+            </div>
+            <button
+              className={"mlpill " + (mlState.state === "ready" ? "on" : mlState.state === "loading" ? "load" : "")}
+              onClick={() => setTab("data")}
+              title="Semantic matching status"
+            >
+              <span className="led" />
+              {mlState.state === "ready" ? (backfill ? "indexing" : "semantic") : mlState.state === "loading" ? mlState.progress + "%" : mlState.state === "failed" ? "lexical" : "lexical"}
             </button>
-          ))}
-        </div>
+            <button
+              className="theme-toggle"
+              onClick={() => putSettings({ theme: settings.theme === "dark" ? "light" : "dark" })}
+              title="Switch between light and dark mode"
+            >
+              {settings.theme === "dark" ? "☀ Light" : "● Dark"}
+            </button>
+          </div>
 
-        {fatal && <div className="alert stop" style={{ marginTop: 0, marginBottom: 14 }}><b>Storage problem</b>{fatal}</div>}
-        {notice && <div className="alert warn" style={{ marginTop: 0, marginBottom: 14 }}>
-          <b>Fallback storage</b>{notice}
-          <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setNotice(null)}>Got it</button>
-        </div>}
-        {migrated && <div className="alert ok" style={{ marginTop: 0, marginBottom: 14 }}>
-          <b>Moved into the database file</b>
-          {migrated.n} question{migrated.n === 1 ? "" : "s"} lifted out of {migrated.from} into bank.sqlite3, with review history intact.
-          <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setMigrated(null)}>Dismiss</button>
+          <div className="tabs" role="tablist">
+            {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["bank", "Bank"], ["data", "Settings"]].map(([k, label]) => (
+              <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
+                {label}{k === "review" && dueCount > 0 && <span className="badge">{dueCount}</span>}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <main className="main">
+          {fatal && <div className="alert stop" style={{ marginTop: 0, marginBottom: 14 }}><b>Storage problem</b>{fatal}</div>}
+          {notice && <div className="alert warn" style={{ marginTop: 0, marginBottom: 14 }}>
+            <b>Fallback storage</b>{notice}
+            <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setNotice(null)}>Got it</button>
+          </div>}
+          {migrated && <div className="alert ok" style={{ marginTop: 0, marginBottom: 14 }}>
+            <b>Moved into the database file</b>
+            {migrated.n} question{migrated.n === 1 ? "" : "s"} lifted out of {migrated.from} into bank.sqlite3, with review history intact.
+            <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setMigrated(null)}>Dismiss</button>
         </div>}
         {backfill && (
           <div className="alert ml" style={{ marginTop: 0, marginBottom: 14 }}>
@@ -1188,10 +1285,12 @@ function QuestionBank() {
           </div>
         )}
 
-        {tab === "add" && <AddView ctx={ctx} prefill={prefill} clearPrefill={() => setPrefill(null)} />}
+        {tab === "add" && <AddView ctx={ctx} prefill={prefill} clearPrefill={() => setPrefill(null)}
+          editItem={editItem} clearEdit={() => setEditItem(null)} />}
         {tab === "review" && <ReviewView ctx={ctx} goAdd={() => setTab("add")} />}
         {tab === "coverage" && <CoverageView ctx={ctx} onGap={(p) => { setPrefill(p); setTab("add"); }} />}
-        {tab === "bank" && <BankView ctx={ctx} goAdd={() => setTab("add")} seed={async () => {
+        {tab === "bank" && <BankView ctx={ctx} goAdd={() => setTab("add")}
+          onEdit={(item) => { setEditItem(item); setTab("add"); }} seed={async () => {
           const s = STARTER();
           await Repo.saveConcepts(s.concepts); await Repo.saveQuestions(s.questions);
           setConcepts(s.concepts); setQuestions(s.questions);
@@ -1199,13 +1298,14 @@ function QuestionBank() {
         {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill} store={store}
           enableML={() => { putSettings({ mlEnabled: true }); enableML(); }}
           setAll={(q, c) => { setQuestions(q); setConcepts(c); }} />}
+        </main>
       </div>
     </div>
   );
 }
 
 /* ================================ ADD ================================== */
-function AddView({ ctx, prefill, clearPrefill }) {
+function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
   const { questions, concepts, vecs, mlReady, putQ, putC, putVec } = ctx;
   const [text, setText] = useState("");
   const [answer, setAnswer] = useState("");
@@ -1220,6 +1320,7 @@ function AddView({ ctx, prefill, clearPrefill }) {
   const [liveVec, setLiveVec] = useState(null);
   const [thinking, setThinking] = useState(false);
   const [touchedConcept, setTouchedConcept] = useState(false);
+  const [editingId, setEditingId] = useState(null);
 
   const conceptOf = (id) => concepts.find((c) => c.id === id);
 
@@ -1233,9 +1334,38 @@ function AddView({ ctx, prefill, clearPrefill }) {
     clearPrefill();
   }, [prefill, clearPrefill]);
 
+  /* load an existing question into the same form, checks and all, rather
+     than a separate edit screen — so an edit is held to the exact same
+     duplicate and concept checks a new question would face. */
+  useEffect(() => {
+    if (!editItem) return;
+    setEditingId(editItem.id);
+    setText(editItem.text || "");
+    setAnswer(editItem.answer || "");
+    setConceptId(editItem.conceptId || null);
+    setAngle(editItem.angle || null);
+    setDifficulty(editItem.difficulty || "medium");
+    setConceptInput("");
+    setTouchedConcept(true);
+    setOverride(false);
+    setFlash(null);
+  }, [editItem]);
+
+  function cancelEdit() {
+    setEditingId(null);
+    setText(""); setAnswer(""); setConceptId(null); setAngle(null); setDifficulty("medium");
+    setConceptInput(""); setTouchedConcept(false); setOverride(false);
+    setDebounced(""); setLiveVec(null);
+    clearEdit();
+  }
+
   useEffect(() => { const t = setTimeout(() => setDebounced(text), 220); return () => clearTimeout(t); }, [text]);
 
   const active = debounced.trim().length >= 8;
+  /* progressive disclosure: keep concept/angle/answer out of the way until
+     there's an actual question worth categorizing — instant, not debounced,
+     so the extra fields don't lag behind typing. */
+  const showMore = text.trim().length >= 8 || !!editingId;
 
   /* embed what is being typed, cancel if it changes underneath us */
   useEffect(() => {
@@ -1251,6 +1381,7 @@ function AddView({ ctx, prefill, clearPrefill }) {
   const matches = useMemo(() => {
     if (!active) return [];
     return questions
+      .filter((q) => q.id !== editingId)
       .map((q) => {
         const lex = lexScore(debounced, q.text);
         let sem = null;
@@ -1261,7 +1392,7 @@ function AddView({ ctx, prefill, clearPrefill }) {
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
       .filter((m) => m.score >= 22);
-  }, [debounced, active, questions, vecs, liveVec]);
+  }, [debounced, active, questions, vecs, liveVec, editingId]);
 
   const top = matches.length ? matches[0] : null;
   const score = top ? top.score : 0;
@@ -1287,7 +1418,7 @@ function AddView({ ctx, prefill, clearPrefill }) {
     if (liveVec) {
       /* k nearest neighbours, similarity-weighted vote */
       const scored = questions
-        .filter((q) => q.conceptId && vecs.get(q.id))
+        .filter((q) => q.conceptId && vecs.get(q.id) && q.id !== editingId)
         .map((q) => ({ q, s: cosine(liveVec, vecs.get(q.id)) }))
         .sort((a, b) => b.s - a.s)
         .slice(0, 5)
@@ -1331,9 +1462,9 @@ function AddView({ ctx, prefill, clearPrefill }) {
 
   const gapAngles = useMemo(() => {
     if (!conceptId) return [];
-    const have = new Set(questions.filter((q) => q.conceptId === conceptId).map((q) => q.angle));
+    const have = new Set(questions.filter((q) => q.conceptId === conceptId && q.id !== editingId).map((q) => q.angle));
     return ANGLES.filter((a) => !have.has(a.id));
-  }, [conceptId, questions]);
+  }, [conceptId, questions, editingId]);
 
   function pickConcept(c) { setConceptId(c.id); setConceptInput(""); setTouchedConcept(true); }
 
@@ -1351,6 +1482,25 @@ function AddView({ ctx, prefill, clearPrefill }) {
 
   async function save(asVariant) {
     const clean = text.trim().replace(/\s+/g, " ");
+
+    if (editingId) {
+      const prev = questions.find((x) => x.id === editingId) || {};
+      const textChanged = prev.text !== clean;
+      const q = { ...prev, text: clean, answer: answer.trim(), conceptId, angle: angle || "def", difficulty };
+      await putQ(q);
+      if (mlReady) {
+        const v = textChanged ? (liveVec || (await ML.embed(clean))) : (liveVec || vecs.get(editingId));
+        if (v) putVec(q.id, v);
+      }
+      cancelEdit();
+      setFlash({
+        kind: "ok",
+        title: "Question updated",
+        body: "Saved in place — review history, streak, and due date are untouched.",
+      });
+      return;
+    }
+
     const q = {
       id: uid(), text: clean, answer: answer.trim(), conceptId, angle: angle || "def", difficulty,
       due: now(), created: now(), last: null,
@@ -1374,6 +1524,12 @@ function AddView({ ctx, prefill, clearPrefill }) {
 
   return (
     <>
+      {editingId && (
+        <div className="alert info" style={{ marginTop: 0, marginBottom: 14 }}>
+          <b>Editing an existing question</b>
+          Same duplicate, concept, and angle checks as adding a new one. Its due date, streak, and review history stay exactly as they are.
+        </div>
+      )}
       {flash && <div className={"alert " + (flash.kind === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}><b>{flash.title}</b>{flash.body}</div>}
 
       <div className="card">
@@ -1384,14 +1540,14 @@ function AddView({ ctx, prefill, clearPrefill }) {
             placeholder="Type the question as an interviewer would ask it…" />
           <p className="hint">
             {empty ? "Nothing to compare against yet — load the starter set from the Bank tab."
-              : mlReady ? "Compared against all " + questions.length + " by meaning and by wording."
-              : "Compared against all " + questions.length + " by wording. Turn on semantic matching in Data to catch paraphrases."}
+              : mlReady ? "Compared against the other " + Math.max(0, questions.length - (editingId ? 1 : 0)) + " by meaning and by wording."
+              : "Compared against the other " + Math.max(0, questions.length - (editingId ? 1 : 0)) + " by wording. Turn on semantic matching in Settings to catch paraphrases."}
           </p>
         </div>
 
         <div className="gauge">
           <div className="gauge-top">
-            <div className="gauge-num" style={{ color: active ? BAND_COLOR[bnd] : "#C3C9D6" }}>
+            <div className="gauge-num" style={{ color: active ? BAND_COLOR[bnd] : "var(--ledoff)" }}>
               {active ? score : "—"}<span>{active ? "%" : ""}</span>
             </div>
             <div className="gauge-verdict">
@@ -1438,9 +1594,11 @@ function AddView({ ctx, prefill, clearPrefill }) {
         {active && bnd === "collide" && !override && (
           <div className="alert stop">
             <b>This one's already asked.</b>
-            Sharpen the wording, or keep it as a variant of the existing question so review never shows you both.
+            {editingId
+              ? "Sharpen the wording so it doesn't overlap the question above, or save anyway if the overlap is intentional."
+              : "Sharpen the wording, or keep it as a variant of the existing question so review never shows you both."}
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn tiny line" onClick={() => setOverride(true)}>Keep as a variant</button>
+              <button className="btn tiny line" onClick={() => setOverride(true)}>{editingId ? "Save anyway" : "Keep as a variant"}</button>
             </div>
           </div>
         )}
@@ -1452,98 +1610,109 @@ function AddView({ ctx, prefill, clearPrefill }) {
         )}
       </div>
 
-      <div className="card">
-        <span className="eyebrow">Concept {liveVec && conceptSuggestions.length > 0 && !conceptId ? "— suggested from nearest questions" : ""}</span>
-        {conceptId ? (
-          <div className="chips">
-            <button className="chip on" onClick={() => { setConceptId(null); setTouchedConcept(true); }}>
-              {conceptOf(conceptId) ? conceptOf(conceptId).name : "?"}<span className="x">✕</span>
-            </button>
+      {showMore && (
+        <>
+          <div className="card">
+            <span className="eyebrow">Concept {liveVec && conceptSuggestions.length > 0 && !conceptId ? "— suggested from nearest questions" : ""}</span>
+            {conceptId ? (
+              <div className="chips">
+                <button className="chip on" onClick={() => { setConceptId(null); setTouchedConcept(true); }}>
+                  {conceptOf(conceptId) ? conceptOf(conceptId).name : "?"}<span className="x">✕</span>
+                </button>
+              </div>
+            ) : (
+              <>
+                <input className="t" value={conceptInput} onChange={(e) => { setConceptInput(e.target.value); setTouchedConcept(true); }} placeholder="Search or name a concept…" />
+                {conceptInput.trim() === "" && conceptSuggestions.length > 0 && (
+                  <div className="chips">
+                    {conceptSuggestions.map(({ c, conf }) => (
+                      <button key={c.id} className="chip" onClick={() => pickConcept(c)}>
+                        {c.name}{conf !== null && <span className="conf">{conf}%</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {conceptInput.trim() !== "" && (
+                  <div className="chips">
+                    {concepts.filter((c) => cnorm(c.name).includes(cnorm(conceptInput)) || (c.aliases || []).some((a) => cnorm(a).includes(cnorm(conceptInput))))
+                      .slice(0, 6).map((c) => <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>)}
+                  </div>
+                )}
+                {resolution && resolution.kind === "exact" && (
+                  <div className="alert ok"><b>{resolution.concept.name} already exists.</b>
+                    <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => pickConcept(resolution.concept)}>Use it</button></div>
+                )}
+                {resolution && resolution.kind === "similar" && (
+                  <div className="alert warn">
+                    <b>Did you mean {resolution.concept.name}?</b>
+                    Two spellings of one concept split your coverage in half.
+                    <div className="row" style={{ marginTop: 10 }}>
+                      <button className="btn tiny" onClick={() => useAliasFor(resolution.concept)}>Use {resolution.concept.name}</button>
+                      <button className="btn tiny line" onClick={createConcept}>Keep separate</button>
+                    </div>
+                  </div>
+                )}
+                {resolution && resolution.kind === "new" && (
+                  <button className="btn tiny line" style={{ marginTop: 10 }} onClick={createConcept}>Create “{conceptInput.trim()}”</button>
+                )}
+              </>
+            )}
           </div>
-        ) : (
-          <>
-            <input className="t" value={conceptInput} onChange={(e) => { setConceptInput(e.target.value); setTouchedConcept(true); }} placeholder="Search or name a concept…" />
-            {conceptInput.trim() === "" && conceptSuggestions.length > 0 && (
-              <div className="chips">
-                {conceptSuggestions.map(({ c, conf }) => (
-                  <button key={c.id} className="chip" onClick={() => pickConcept(c)}>
-                    {c.name}{conf !== null && <span className="conf">{conf}%</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-            {conceptInput.trim() !== "" && (
-              <div className="chips">
-                {concepts.filter((c) => cnorm(c.name).includes(cnorm(conceptInput)) || (c.aliases || []).some((a) => cnorm(a).includes(cnorm(conceptInput))))
-                  .slice(0, 6).map((c) => <button key={c.id} className="chip" onClick={() => pickConcept(c)}>{c.name}</button>)}
-              </div>
-            )}
-            {resolution && resolution.kind === "exact" && (
-              <div className="alert ok"><b>{resolution.concept.name} already exists.</b>
-                <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => pickConcept(resolution.concept)}>Use it</button></div>
-            )}
-            {resolution && resolution.kind === "similar" && (
-              <div className="alert warn">
-                <b>Did you mean {resolution.concept.name}?</b>
-                Two spellings of one concept split your coverage in half.
-                <div className="row" style={{ marginTop: 10 }}>
-                  <button className="btn tiny" onClick={() => useAliasFor(resolution.concept)}>Use {resolution.concept.name}</button>
-                  <button className="btn tiny line" onClick={createConcept}>Keep separate</button>
-                </div>
-              </div>
-            )}
-            {resolution && resolution.kind === "new" && (
-              <button className="btn tiny line" style={{ marginTop: 10 }} onClick={createConcept}>Create “{conceptInput.trim()}”</button>
-            )}
-          </>
-        )}
-      </div>
 
-      <div className="card">
-        <span className="eyebrow">
-          Angle
-          {angleAuto && <span style={{ textTransform: "none", letterSpacing: 0 }}>
-            {" — read as " + angleName(angleAuto.id) + " from " + angleAuto.how}
-            {angleAuto.conf !== null ? " (" + angleAuto.conf + "%)" : ""}
-          </span>}
-        </span>
-        <div className="chips">
-          {ANGLES.map((a) => <button key={a.id} className={"chip" + (angle === a.id ? " on" : "")} onClick={() => setAngle(a.id)}>{a.name}</button>)}
-        </div>
-        <p className="hint">Every concept is worth asking six ways. The angle is how Coverage finds your blind spots.</p>
-
-        {conceptId && gapAngles.length > 0 && (
-          <>
-            <span className="eyebrow" style={{ marginTop: 16 }}>Still unasked for {conceptOf(conceptId) ? conceptOf(conceptId).name : ""}</span>
+          <div className="card">
+            <span className="eyebrow">
+              Angle
+              {angleAuto && <span style={{ textTransform: "none", letterSpacing: 0 }}>
+                {" — read as " + angleName(angleAuto.id) + " from " + angleAuto.how}
+                {angleAuto.conf !== null ? " (" + angleAuto.conf + "%)" : ""}
+              </span>}
+            </span>
             <div className="chips">
-              {gapAngles.map((a) => <button key={a.id} className="chip ghost" onClick={() => setAngle(a.id)}>{a.name}</button>)}
+              {ANGLES.map((a) => <button key={a.id} className={"chip" + (angle === a.id ? " on" : "")} onClick={() => setAngle(a.id)}>{a.name}</button>)}
             </div>
-          </>
-        )}
+            <p className="hint">Every concept is worth asking six ways. The angle is how Coverage finds your blind spots.</p>
 
-        <div className="field">
-          <span className="eyebrow">Difficulty {difficultyHint && <span style={{ textTransform: "none", letterSpacing: 0 }}>— similar ones are {difficultyHint}</span>}</span>
-          <div className="chips">
-            {["easy", "medium", "hard"].map((d) => <button key={d} className={"chip" + (difficulty === d ? " on" : "")} onClick={() => setDifficulty(d)}>{d}</button>)}
+            {conceptId && gapAngles.length > 0 && (
+              <>
+                <span className="eyebrow" style={{ marginTop: 16 }}>Still unasked for {conceptOf(conceptId) ? conceptOf(conceptId).name : ""}</span>
+                <div className="chips">
+                  {gapAngles.map((a) => <button key={a.id} className="chip ghost" onClick={() => setAngle(a.id)}>{a.name}</button>)}
+                </div>
+              </>
+            )}
+
+            <div className="field">
+              <span className="eyebrow">Difficulty {difficultyHint && <span style={{ textTransform: "none", letterSpacing: 0 }}>— similar ones are {difficultyHint}</span>}</span>
+              <div className="chips">
+                {["easy", "medium", "hard"].map((d) => <button key={d} className={"chip" + (difficulty === d ? " on" : "")} onClick={() => setDifficulty(d)}>{d}</button>)}
+              </div>
+            </div>
           </div>
+
+          <div className="card">
+            <span className="eyebrow">What a strong answer covers</span>
+            <textarea className="q sm" value={answer} onChange={(e) => setAnswer(e.target.value)}
+              placeholder={"One beat per line.\nReview checks your spoken answer against each one."} />
+            <p className="hint">
+              {splitBeats(answer).length > 0
+                ? splitBeats(answer).length + " beat" + (splitBeats(answer).length === 1 ? "" : "s") + " detected. Review will tell you which ones you skipped."
+                : "Write one beat per line. Review scores your spoken answer against them individually."}
+            </p>
+          </div>
+        </>
+      )}
+
+      <div className="card">
+        <div className="row">
+          <button className="btn" disabled={!text.trim() || blocked} onClick={() => save(!editingId && override && bnd === "collide")}>
+            {blocked ? "Too close to save"
+              : editingId ? "Save changes"
+              : override && bnd === "collide" ? "Save as a variant"
+              : !showMore ? "Keep typing…"
+              : "Add to the bank"}
+          </button>
+          {editingId && <button className="btn line" onClick={cancelEdit}>Cancel</button>}
         </div>
-      </div>
-
-      <div className="card">
-        <span className="eyebrow">What a strong answer covers</span>
-        <textarea className="q sm" value={answer} onChange={(e) => setAnswer(e.target.value)}
-          placeholder={"One beat per line.\nReview checks your spoken answer against each one."} />
-        <p className="hint">
-          {splitBeats(answer).length > 0
-            ? splitBeats(answer).length + " beat" + (splitBeats(answer).length === 1 ? "" : "s") + " detected. Review will tell you which ones you skipped."
-            : "Write one beat per line. Review scores your spoken answer against them individually."}
-        </p>
-      </div>
-
-      <div className="card">
-        <button className="btn" disabled={!text.trim() || blocked} onClick={() => save(override && bnd === "collide")}>
-          {blocked ? "Too close to save" : override && bnd === "collide" ? "Save as a variant" : "Add to the bank"}
-        </button>
       </div>
     </>
   );
@@ -1684,6 +1853,32 @@ function ReviewView({ ctx, goAdd }) {
     setDone((d) => [...d, card.id]);
   }
 
+  /* Anki-style keyboard flow: Space advances (start answering, then reveal),
+     1–4 grade once the answer is up. Ignored while typing in a text field. */
+  useEffect(() => {
+    function onKey(e) {
+      const tag = (e.target && e.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if (e.code === "Space") {
+        if (phase === "ask") {
+          e.preventDefault();
+          if (dict.supported) dict.start();
+          setRunning(true);
+          setPhase("talk");
+        } else if (phase === "talk") {
+          e.preventDefault();
+          finishTalking();
+        }
+      } else if (phase === "check" && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) {
+        e.preventDefault();
+        grade(Number(e.key));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, dict, manual, card, beats, mlReady, results, elapsed, target, settings.retention]);
+
   if (!questions.length) {
     return <div className="card"><div className="empty">
       <h3>Nothing to review yet.</h3>
@@ -1737,6 +1932,7 @@ function ReviewView({ ctx, goAdd }) {
               </button>
             </div>
             {!dict.supported && <p className="hint">This browser has no speech recognition, so grading falls back to self-assessment. Chrome handles it best.</p>}
+            <p className="hint">Press <b>Space</b> to start.</p>
           </>
         )}
 
@@ -1759,6 +1955,7 @@ function ReviewView({ ctx, goAdd }) {
                 placeholder="Optional: type the gist of what you said, and it gets scored the same way." />
             )}
             <button className="btn line" style={{ marginTop: 12 }} onClick={finishTalking}>Done — show me the answer</button>
+            <p className="hint">Press <b>Space</b> to finish and reveal the answer.</p>
           </div>
         )}
 
@@ -1771,9 +1968,9 @@ function ReviewView({ ctx, goAdd }) {
             {results && (
               <>
                 <div className="alert" style={{
-                  background: sug.ratio >= 0.6 ? "#EAF6F1" : "#FDF6E7",
-                  border: "1px solid " + (sug.ratio >= 0.6 ? "#BFE0D3" : "#EBD9A8"),
-                  color: sug.ratio >= 0.6 ? "#08503B" : "#6B4A02",
+                  background: sug.ratio >= 0.6 ? "var(--okbg)" : "var(--warnbg)",
+                  border: "1px solid " + (sug.ratio >= 0.6 ? "var(--okborder)" : "var(--warnborder)"),
+                  color: sug.ratio >= 0.6 ? "var(--oktext)" : "var(--warntext)",
                 }}>
                   <b>You covered {results.filter((r) => r.state === "hit").length} of {results.length} beats.</b>
                   {results.some((r) => r.state === "miss")
@@ -1805,12 +2002,12 @@ function ReviewView({ ctx, goAdd }) {
             <div className="grade">
               {GRADES.map(({ g, name }) => (
                 <button key={g} className={sug && sug.grade === g ? "rec" : ""} onClick={() => grade(g)}>
-                  <b>{name}</b>
+                  <b>{g} · {name}</b>
                   <small>{previewDays(card, g, settings.retention)}</small>
                 </button>
               ))}
             </div>
-            <p className="hint">Intervals come from FSRS, fitted to this card's own stability and difficulty — not a fixed ladder.</p>
+            <p className="hint">Intervals come from FSRS, fitted to this card's own stability and difficulty — not a fixed ladder. Press <b>1–4</b> to grade.</p>
           </div>
         )}
       </div>
@@ -1913,7 +2110,7 @@ function CoverageView({ ctx, onGap }) {
 }
 
 /* =============================== BANK ================================== */
-function BankView({ ctx, goAdd, seed }) {
+function BankView({ ctx, goAdd, onEdit, seed }) {
   const { questions, concepts, vecs, mlReady, putQ, dropQ, putVec } = ctx;
   const [q, setQ] = useState("");
   const [qVec, setQVec] = useState(null);
@@ -1998,6 +2195,7 @@ function BankView({ ctx, goAdd, seed }) {
                 </>
               ) : (
                 <div className="row" style={{ marginTop: 10 }}>
+                  <button className="btn tiny line" onClick={() => onEdit(item)}>Edit question</button>
                   <button className="btn tiny line" onClick={() => { setEditing(item.id); setDraft(item.answer || ""); }}>{item.answer ? "Edit notes" : "Add notes"}</button>
                   <button className="btn tiny line" onClick={() => dropQ(item.id)}>Delete</button>
                 </div>
@@ -2006,7 +2204,10 @@ function BankView({ ctx, goAdd, seed }) {
                 <div className="variant" key={v.id} style={{ marginTop: 10 }}>
                   <div className="near-meta">variant</div>
                   <div className="item-q" style={{ fontSize: 15 }}>{v.text}</div>
-                  <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => dropQ(v.id)}>Delete variant</button>
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button className="btn tiny line" onClick={() => onEdit(v)}>Edit</button>
+                    <button className="btn tiny line" onClick={() => dropQ(v.id)}>Delete variant</button>
+                  </div>
                 </div>
               ))}
             </div>
