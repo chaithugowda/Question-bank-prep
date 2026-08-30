@@ -3,7 +3,7 @@
 An interview question bank that refuses duplicates, maps your blind spots by angle,
 and drills you out loud on a spacing schedule.
 
-**Live:** https://chaithugowda.github.io/question-bank/
+**Live:** [https://chaithugowda.github.io/question-bank/](https://chaithugowda.github.io/Question-bank-prep/)
 
 ## What it does
 
