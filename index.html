@@ -6,6 +6,13 @@
 <title>The Bank — interview question bank</title>
 <meta name="description" content="An interview question bank that refuses duplicates by meaning, maps blind spots by angle, and grades your spoken answers. Runs entirely in your browser." />
 <meta name="theme-color" content="#E7EAF0" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="The Bank" />
+<meta name="color-scheme" content="light dark" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23141A26'/><text y='71' x='50' text-anchor='middle' font-size='62' font-family='sans-serif' font-weight='bold' fill='%232D3BD4'>B</text></svg>" />
 <style>
   html,body{margin:0;padding:0;background:#E7EAF0;}
@@ -13,6 +20,61 @@
   #boot{font:14px/1.6 system-ui,sans-serif;color:#5C6478;padding:44px 22px;text-align:center;}
   #boot b{display:block;color:#141A26;font-size:22px;letter-spacing:-.03em;margin-bottom:8px;}
 </style>
+
+<script>
+/* PWA plumbing, deliberately outside React so it works before the app boots. */
+(function () {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("./sw.js").then(function (reg) {
+        /* A new build is waiting: offer a reload rather than swapping the
+           page out mid-session, which would lose an in-progress answer. */
+        function offer(worker) {
+          var bar = document.createElement("div");
+          bar.setAttribute("style",
+            "position:fixed;left:12px;right:12px;bottom:12px;z-index:999;display:flex;gap:10px;" +
+            "align-items:center;justify-content:space-between;background:#141A26;color:#fff;" +
+            "border-radius:12px;padding:12px 14px;font:13px/1.4 system-ui,sans-serif;" +
+            "box-shadow:0 12px 30px -12px rgba(0,0,0,.5)");
+          bar.innerHTML = "<span>A new version is ready.</span>";
+          var btn = document.createElement("button");
+          btn.textContent = "Reload";
+          btn.setAttribute("style",
+            "background:#fff;color:#141A26;border:0;border-radius:8px;padding:7px 13px;" +
+            "font:500 13px system-ui,sans-serif;cursor:pointer");
+          btn.onclick = function () { worker.postMessage("skip-waiting"); };
+          bar.appendChild(btn);
+          document.body.appendChild(bar);
+        }
+        if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+        reg.addEventListener("updatefound", function () {
+          var w = reg.installing;
+          if (!w) return;
+          w.addEventListener("statechange", function () {
+            if (w.state === "installed" && navigator.serviceWorker.controller) offer(w);
+          });
+        });
+      }).catch(function () { /* http:// or unsupported — the app still runs */ });
+    });
+    var reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", function () {
+      if (reloading) return; reloading = true; location.reload();
+    });
+  }
+
+  /* Chrome fires this when the app is installable; stash it so Settings can
+     show a real Install button instead of hiding in the browser menu. */
+  window.addEventListener("beforeinstallprompt", function (e) {
+    e.preventDefault();
+    window.__installPrompt = e;
+    window.dispatchEvent(new CustomEvent("bank-installable"));
+  });
+  window.addEventListener("appinstalled", function () {
+    window.__installPrompt = null;
+    window.dispatchEvent(new CustomEvent("bank-installed"));
+  });
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
@@ -59,7 +121,7 @@ window.__loadTransformers = async function (onProgress) {
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 /* ==========================================================================
-   THE BANK v2 — semantic dedup, auto-tagging, spoken grading, FSRS, IndexedDB
+   THE BANK v2 — semantic dedup, auto-tagging, spoken grading, FSRS, SQLite
    ========================================================================== */
 
 const CSS = `
@@ -78,6 +140,8 @@ const CSS = `
   --shadow-sm:rgba(20,26,38,.05); --shadow-lg:rgba(20,26,38,.4);
   --solid:#141A26; --solid2:#232B44; --on-solid:#FFFFFF;
   --grad:linear-gradient(90deg,var(--indigo),var(--violet));
+  --ease-out:cubic-bezier(.22,1,.36,1);
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);
   --grotesk:'Space Grotesk',Futura,'Trebuchet MS',sans-serif;
   --serif:'Newsreader',Georgia,'Iowan Old Style',serif;
   --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
@@ -168,8 +232,6 @@ const CSS = `
   font-weight:500; padding:9px 10px; border-radius:8px;}
 .mode-toggle button.on{background:linear-gradient(135deg,var(--solid),var(--solid2)); color:var(--on-solid);}
 
-.rev-flip{transition:transform .16s ease, opacity .16s ease; transform-origin:center;}
-.rev-flip.flip{transform:scaleX(.94); opacity:.5;}
 @media (min-width:900px){
   .sidebar .tabs{flex-direction:column; background:transparent; border:0; padding:0;
     box-shadow:none; gap:2px; margin:4px 0 0;}
@@ -341,7 +403,267 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
 .kv span{color:var(--soft);}
 .kv b{font-family:var(--mono); font-size:12px; font-weight:500;}
 
-@media (prefers-reduced-motion: reduce){ .qb *{transition:none !important; animation:none !important;} }
+/* ---- flashcard focus mode: a real card on a stage, not a page section ---- */
+.fc-overlay{position:fixed; inset:0; z-index:120; display:flex; flex-direction:column;
+  background:
+    radial-gradient(1100px 600px at 50% -15%, rgba(45,59,212,.16), transparent 65%),
+    var(--paper);
+  padding:max(14px,env(safe-area-inset-top)) 16px max(18px,env(safe-area-inset-bottom));
+  overscroll-behavior:contain;}
+.fc-top{display:flex; align-items:center; gap:14px; max-width:660px; width:100%; margin:0 auto 4px;}
+.fc-count{font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--soft); font-variant-numeric:tabular-nums; flex-shrink:0;}
+.fc-progress{flex:1; height:3px; background:var(--track); border-radius:99px; overflow:hidden;}
+.fc-progress i{display:block; height:100%; background:var(--grad); border-radius:99px; transition:width .35s ease;}
+.fc-close{border:1px solid var(--rule); background:var(--card); color:var(--soft); border-radius:99px;
+  padding:6px 12px; font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; flex-shrink:0;}
+.fc-close:hover{border-color:var(--collide); color:var(--collide);}
+
+.fc-stage{flex:1; display:flex; align-items:center; justify-content:center; perspective:1600px;
+  max-width:660px; width:100%; margin:0 auto; position:relative; min-height:0; padding:10px 0;}
+/* two ghosts behind the live card so the queue reads as a physical pile */
+.fc-ghost{position:absolute; left:0; right:0; top:50%; height:min(58vh,470px); margin-top:min(-29vh,-235px);
+  background:var(--card); border:1px solid var(--rule); border-radius:20px; pointer-events:none;}
+.fc-ghost.g1{transform:scale(.955) translateY(15px); opacity:.55;}
+.fc-ghost.g2{transform:scale(.915) translateY(29px); opacity:.3;}
+
+.fc-slot{position:relative; width:100%; height:min(58vh,470px);
+  transition:transform .24s cubic-bezier(.4,0,.7,.3), opacity .24s ease;}
+.fc-slot.out-left{transform:translateX(-118%) rotate(-9deg); opacity:0;}
+.fc-slot.out-right{transform:translateX(118%) rotate(9deg); opacity:0;}
+.fc-slot.out-up{transform:translateY(-34%) scale(.9); opacity:0;}
+.fc-slot.in{animation:fcIn .3s cubic-bezier(.2,.8,.3,1);}
+@keyframes fcIn{from{transform:translateY(22px) scale(.96); opacity:0;} to{transform:none; opacity:1;}}
+
+.fc-card{position:relative; width:100%; height:100%; transform-style:preserve-3d;
+  transition:transform .52s cubic-bezier(.2,.75,.3,1); cursor:pointer;}
+.fc-card.flipped{transform:rotateY(180deg);}
+.fc-face{position:absolute; inset:0; backface-visibility:hidden; -webkit-backface-visibility:hidden;
+  background:var(--card); border:1px solid var(--rule); border-radius:20px; padding:26px 24px;
+  display:flex; flex-direction:column; box-shadow:0 2px 4px var(--shadow-sm), 0 34px 60px -34px var(--shadow-lg);}
+.fc-front{align-items:center; justify-content:center; text-align:center;}
+.fc-back{transform:rotateY(180deg); overflow-y:auto; -webkit-overflow-scrolling:touch;}
+
+.fc-meta{font-family:var(--mono); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--soft); margin-bottom:20px;}
+.fc-q{font-family:var(--serif); font-size:clamp(21px,4.4vw,30px); line-height:1.28; letter-spacing:-.015em;}
+.fc-tap{position:absolute; bottom:20px; left:0; right:0; font-family:var(--mono); font-size:9.5px;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--placeholder);}
+.fc-alt{font-family:var(--mono); font-size:9.5px; letter-spacing:.08em; color:var(--placeholder); margin-top:16px;}
+
+.fc-back .eyebrow{margin-bottom:12px;}
+.fc-beat{display:flex; gap:11px; align-items:flex-start; padding:9px 0;}
+.fc-beat + .fc-beat{border-top:1px solid var(--divider);}
+.fc-beat i{font-style:normal; font-family:var(--mono); font-size:10px; color:var(--indigo);
+  padding-top:4px; flex-shrink:0; width:14px;}
+.fc-beat p{margin:0; font-family:var(--serif); font-size:16.5px; line-height:1.45;}
+.fc-plain{font-family:var(--serif); font-size:16.5px; line-height:1.5; margin:0; white-space:pre-line;}
+
+.fc-grade{display:grid; grid-template-columns:repeat(4,1fr); gap:7px; max-width:660px; width:100%;
+  margin:12px auto 0; animation:fcIn .22s ease;}
+.fc-grade button{border:1px solid var(--rule); background:var(--card); border-radius:12px;
+  padding:11px 6px; text-align:center; box-shadow:0 1px 2px var(--shadow-sm);}
+.fc-grade b{display:block; font-size:12.5px; letter-spacing:-.01em;}
+.fc-grade small{display:block; font-family:var(--mono); font-size:9px; color:var(--soft);
+  letter-spacing:.06em; margin-top:4px;}
+.fc-grade button:active{transform:scale(.97);}
+.fc-grade .g1{border-color:var(--collide);} .fc-grade .g1 b{color:var(--collide);}
+.fc-grade .g4{border-color:var(--clear);}  .fc-grade .g4 b{color:var(--clear);}
+.fc-foot{text-align:center; font-family:var(--mono); font-size:9.5px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--placeholder); margin-top:11px;}
+
+.fc-done{text-align:center; max-width:380px; margin:auto; padding:20px;}
+.fc-done h3{font-family:var(--serif); font-size:25px; font-weight:600; margin:0 0 8px;}
+.fc-done p{font-size:14px; color:var(--soft); line-height:1.5; margin:0 0 18px;}
+
+.deck{display:flex; align-items:center; gap:14px; margin-top:4px;}
+.deck-num{font-size:40px; font-weight:700; letter-spacing:-.04em; line-height:.9;
+  font-variant-numeric:tabular-nums; background:var(--grad);
+  -webkit-background-clip:text; background-clip:text; color:transparent;}
+.deck small{display:block; font-family:var(--mono); font-size:9.5px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--soft); margin-top:5px;}
+
+@media (max-width:420px){
+  .fc-face{padding:22px 18px; border-radius:18px;}
+  .fc-grade{gap:5px;} .fc-grade button{padding:10px 3px;} .fc-grade b{font-size:11.5px;}
+}
+
+/* ===================== STREAK, SESSION, HISTORY ===================== */
+.streak{display:flex; align-items:center; gap:8px; border:1px solid var(--rule); background:var(--card);
+  border-radius:99px; padding:5px 12px 5px 9px; flex-shrink:0;}
+.streak .fire{font-size:15px; line-height:1; filter:grayscale(1); opacity:.4;}
+.streak.live .fire{filter:none; opacity:1; animation:flicker 2.4s ease-in-out infinite;}
+.streak.live{border-color:var(--warn);}
+.streak b{font-size:15px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums;}
+.streak small{font-family:var(--mono); font-size:8.5px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--soft); display:block; margin-top:1px;}
+@keyframes flicker{0%,100%{transform:scale(1) rotate(-2deg);}50%{transform:scale(1.13) rotate(3deg);}}
+
+/* daily goal ring */
+.ring-row{display:flex; align-items:center; gap:16px;}
+.ring{width:78px; height:78px; flex-shrink:0; position:relative;}
+.ring svg{transform:rotate(-90deg); display:block;}
+.ring circle{fill:none; stroke-width:7; stroke-linecap:round;}
+.ring .track{stroke:var(--track);}
+.ring .fill{stroke:url(#ringgrad); transition:stroke-dashoffset .7s var(--ease-out);}
+.ring .label{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+  justify-content:center;}
+.ring .label b{font-size:19px; font-weight:700; letter-spacing:-.03em; line-height:1;
+  font-variant-numeric:tabular-nums;}
+.ring .label span{font-family:var(--mono); font-size:8px; letter-spacing:.1em; color:var(--soft); margin-top:2px;}
+
+/* level bar */
+.level{margin-top:14px;}
+.level-top{display:flex; justify-content:space-between; align-items:baseline; gap:10px;}
+.level-top b{font-size:13.5px;}
+.level-top span{font-family:var(--mono); font-size:10px; color:var(--soft); letter-spacing:.06em;}
+.level-bar{height:6px; background:var(--track); border-radius:99px; overflow:hidden; margin-top:7px;}
+.level-bar i{display:block; height:100%; background:var(--grad); border-radius:99px;
+  transition:width .8s var(--ease-out);}
+
+/* goal-met burst */
+.burst{position:relative; overflow:hidden;}
+.burst span{position:absolute; top:50%; left:50%; width:7px; height:7px; border-radius:2px;
+  opacity:0; animation:pop 1.05s var(--ease-out) forwards;}
+@keyframes pop{
+  0%{opacity:1; transform:translate(-50%,-50%) scale(.4);}
+  100%{opacity:0; transform:translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1) rotate(200deg);}
+}
+
+/* heatmap */
+.heat{display:flex; gap:3px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch;}
+.heat-col{display:flex; flex-direction:column; gap:3px; flex-shrink:0;}
+.heat-cell{width:13px; height:13px; border-radius:3px; background:var(--cellbg); border:1px solid var(--rule);}
+.heat-cell.l1{background:color-mix(in srgb, var(--indigo) 25%, var(--cellbg)); border-color:transparent;}
+.heat-cell.l2{background:color-mix(in srgb, var(--indigo) 48%, var(--cellbg)); border-color:transparent;}
+.heat-cell.l3{background:color-mix(in srgb, var(--indigo) 72%, var(--cellbg)); border-color:transparent;}
+.heat-cell.l4{background:var(--indigo); border-color:transparent;}
+.heat-cell.today{box-shadow:0 0 0 2px var(--warn);}
+.heat-months{display:flex; gap:3px; margin-bottom:5px; font-family:var(--mono); font-size:8.5px;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--soft);}
+.heat-months span{flex-shrink:0; width:16px;}
+
+/* small bar charts */
+.chart{display:flex; align-items:flex-end; gap:6px; height:104px; margin-top:12px;}
+.chart-col{flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; height:100%;}
+.chart-bar{width:100%; border-radius:5px 5px 2px 2px; background:var(--grad); min-height:3px;
+  animation:growUp .6s var(--ease-out) both; transform-origin:bottom;}
+.chart-bar.under{background:linear-gradient(180deg,var(--collide),var(--warn));}
+@keyframes growUp{from{transform:scaleY(0);}to{transform:scaleY(1);}}
+.chart-val{font-family:var(--mono); font-size:9.5px; color:var(--soft); margin-bottom:5px;
+  font-variant-numeric:tabular-nums;}
+.chart-key{font-family:var(--mono); font-size:9px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--soft); margin-top:7px; text-align:center;}
+.target-line{position:relative; height:0; border-top:1px dashed var(--warn); margin-top:-1px;}
+.target-line b{position:absolute; right:0; top:-15px; font-family:var(--mono); font-size:8.5px;
+  color:var(--warn); letter-spacing:.08em; background:var(--card); padding:0 4px;}
+
+/* badges */
+.badges{display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px; margin-top:10px;}
+.badge-tile{border:1px solid var(--rule); border-radius:12px; padding:11px 9px; text-align:center;
+  background:var(--surface2); animation:cellIn .34s var(--ease-spring) both;}
+.badge-tile.got{background:var(--card); border-color:var(--violet);
+  box-shadow:0 0 0 2px color-mix(in srgb, var(--violet) 14%, transparent);}
+.badge-tile .ico{font-size:19px; line-height:1; filter:grayscale(1); opacity:.35;}
+.badge-tile.got .ico{filter:none; opacity:1;}
+.badge-tile b{display:block; font-size:11px; margin-top:6px; letter-spacing:-.01em;}
+.badge-tile small{display:block; font-family:var(--mono); font-size:8.5px; color:var(--soft);
+  margin-top:3px; line-height:1.35;}
+.badge-tile .prog{height:3px; background:var(--track); border-radius:99px; margin-top:7px; overflow:hidden;}
+.badge-tile .prog i{display:block; height:100%; background:var(--violet); border-radius:99px;}
+
+/* ======================= MOTION =======================
+   Two rules govern everything below.
+   1. Nothing on the typing path animates. The collision gauge has to read as
+      a live instrument, so its ticks move immediately; only the readout counts.
+   2. No element is left at opacity:0 in a static rule. Every reveal lives in
+      a keyframe, so when prefers-reduced-motion kills animation the content
+      is simply there rather than permanently invisible.
+   ====================================================== */
+
+/* drifting light behind everything — the only thing that moves unprompted */
+.qb::before{
+  content:""; position:fixed; inset:-25%; z-index:0; pointer-events:none;
+  background:
+    radial-gradient(closest-side, rgba(45,59,212,.13), transparent 72%) 18% 10% / 58% 58% no-repeat,
+    radial-gradient(closest-side, rgba(107,63,160,.10), transparent 72%) 80% 34% / 52% 52% no-repeat;
+  animation:drift 26s ease-in-out infinite alternate;
+}
+.qb[data-theme="dark"]::before{
+  background:
+    radial-gradient(closest-side, rgba(139,150,255,.15), transparent 72%) 18% 10% / 58% 58% no-repeat,
+    radial-gradient(closest-side, rgba(186,156,232,.12), transparent 72%) 80% 34% / 52% 52% no-repeat;
+}
+@keyframes drift{
+  from{transform:translate3d(-2%,-1%,0) scale(1);}
+  to{transform:translate3d(3%,2.5%,0) scale(1.09);}
+}
+.shell, .wrap{position:relative; z-index:1;}
+
+/* staggered arrival, replayed whenever the tab changes (main is keyed on it) */
+@keyframes riseIn{ from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:none;} }
+.main > *{animation:riseIn .46s var(--ease-out) both;}
+.main > *:nth-child(1){animation-delay:0ms;}
+.main > *:nth-child(2){animation-delay:45ms;}
+.main > *:nth-child(3){animation-delay:90ms;}
+.main > *:nth-child(4){animation-delay:135ms;}
+.main > *:nth-child(5){animation-delay:180ms;}
+.main > *:nth-child(6){animation-delay:215ms;}
+.main > *:nth-child(n+7){animation-delay:245ms;}
+/* the overlay is fixed and owns its own entrance */
+.main > .fc-overlay{animation:fadeIn .2s var(--ease-out) both; animation-delay:0ms;}
+@keyframes fadeIn{ from{opacity:0;} to{opacity:1;} }
+
+.sidebar .brand{animation:riseIn .5s var(--ease-out) both;}
+.sidebar .side-stats{animation:riseIn .5s var(--ease-out) both; animation-delay:70ms;}
+.sidebar .tabs{animation:riseIn .5s var(--ease-out) both; animation-delay:120ms;}
+
+/* the gauge readout pops when it crosses into a new verdict band */
+@keyframes bandPop{ 0%{transform:scale(.86);} 60%{transform:scale(1.05);} 100%{transform:scale(1);} }
+.gauge-num{animation:bandPop .42s var(--ease-spring); transform-origin:left bottom;}
+.gauge-verdict b{animation:fadeIn .3s var(--ease-out);}
+
+/* measuring bar while an embedding is in flight */
+@keyframes sweep{ from{transform:translateX(-100%);} to{transform:translateX(320%);} }
+.measuring{position:relative; height:2px; margin-top:9px; background:var(--track);
+  border-radius:99px; overflow:hidden;}
+.measuring i{position:absolute; inset:0; width:32%; border-radius:99px;
+  background:var(--grad); animation:sweep 1.05s var(--ease-out) infinite;}
+
+/* coverage fills in on a diagonal rather than all at once */
+@keyframes cellIn{ from{opacity:0; transform:scale(.6);} to{opacity:1; transform:none;} }
+.cell{animation:cellIn .34s var(--ease-spring) both;}
+
+/* beat verdicts land one after another, so you read them in order */
+@keyframes beatIn{ from{opacity:0; transform:translateX(-8px);} to{opacity:1; transform:none;} }
+.beat{animation:beatIn .34s var(--ease-out) both;}
+
+/* press feedback: everything tappable acknowledges the tap */
+.btn, .chip, .cell, .grade button, .tabs button, .mode-toggle button{
+  transition:transform .13s var(--ease-out), background-color .18s ease,
+             border-color .18s ease, color .18s ease, box-shadow .18s ease;}
+.btn:active:not([disabled]), .chip:active, .grade button:active,
+.mode-toggle button:active{transform:scale(.975);}
+.cell:active{transform:scale(.88);}
+.card{transition:border-color .2s ease;}
+
+/* the due stamp breathes once when there is actually something due */
+@keyframes stampIn{ 0%{transform:rotate(-2deg) scale(.82); opacity:0;}
+  70%{transform:rotate(-2deg) scale(1.04);} 100%{transform:rotate(-2deg) scale(1); opacity:1;} }
+.stamp{animation:stampIn .5s var(--ease-spring) both;}
+
+/* the model pill sweeps while the model downloads */
+.mlpill.load{position:relative; overflow:hidden;}
+.mlpill.load::after{content:""; position:absolute; inset:0; width:40%;
+  background:linear-gradient(90deg, transparent, rgba(169,107,4,.18), transparent);
+  animation:sweep 1.4s linear infinite;}
+
+/* One switch turns the whole system off. Because every reveal is a keyframe
+   and no static rule hides anything, killing animation leaves the finished
+   state on screen rather than a blank page. */
+@media (prefers-reduced-motion: reduce){
+  .qb *, .qb *::before, .qb *::after{transition:none !important; animation:none !important;}
+}
 @media (max-width:600px){
   .sidebar{padding:18px 0 10px;}
   .side-stats{margin-bottom:14px;}
@@ -529,6 +851,186 @@ const strengthOf = (q) => {
   return "durable";
 };
 
+
+/* ---------------------------- motion helpers --------------------------- */
+const reduceMotion = () =>
+  typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** Animates a number toward its target. Returns the target immediately when
+    reduced motion is on, or when the jump is trivial. */
+function useCountUp(target, ms) {
+  const [shown, setShown] = useState(target);
+  const cur = useRef(target);
+  useEffect(() => {
+    const from = cur.current;
+    if (from === target || reduceMotion()) { cur.current = target; setShown(target); return; }
+    const dur = ms || 460;
+    const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    let raf = 0;
+    const step = (t) => {
+      const p = Math.min(1, (t - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const v = Math.round(from + (target - from) * eased);
+      cur.current = v;
+      setShown(v);
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, [target, ms]);
+  return shown;
+}
+
+
+/* ======================================================================
+   PROGRESS — streaks, levels, badges and the honest retention numbers.
+   Everything here is derived from the append-only reviews table, so none
+   of it can drift out of sync with what you actually did. Nothing is
+   stored that could be corrupted or gamed by editing a counter.
+   ====================================================================== */
+
+const dayKey = (ts) => {
+  const d = new Date(ts);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+};
+const keyToDate = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
+const shiftDay = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+
+/** Reviews per local day, plus today's count. */
+function dailyCounts(reviews) {
+  const m = new Map();
+  reviews.forEach((r) => { const k = dayKey(r.at); m.set(k, (m.get(k) || 0) + 1); });
+  return m;
+}
+
+/* A streak that punishes one missed day is a streak people abandon after
+   their first slip. This one banks a rest day for every 7 completed, so a
+   single gap costs a credit instead of the whole run. */
+const FREEZE_EVERY = 7;
+
+function computeStreak(counts, goal) {
+  const met = [...counts.entries()].filter(([, n]) => n >= 1).map(([k]) => k).sort();
+  if (!met.length) return { current: 0, longest: 0, freezesLeft: 0, usedFreeze: false, activeToday: false, lastDay: null };
+  const set = new Set(met);
+  const today = dayKey(now());
+  const activeToday = (counts.get(today) || 0) >= (goal || 1);
+  const hitToday = set.has(today);
+
+  /* walk backwards from today (or yesterday, if today is still untouched) */
+  let cursor = keyToDate(today);
+  if (!hitToday) cursor = shiftDay(cursor, -1);
+  let current = 0, earned = 0, spent = 0, usedFreeze = false;
+  for (let guard = 0; guard < 2000; guard++) {
+    const k = dayKey(cursor.getTime());
+    if (set.has(k)) {
+      current++;
+      if (current % FREEZE_EVERY === 0) earned++;
+      cursor = shiftDay(cursor, -1);
+      continue;
+    }
+    /* a single missed day can be covered by a banked credit */
+    const prev = dayKey(shiftDay(cursor, -1).getTime());
+    if (set.has(prev) && earned - spent > 0) {
+      spent++; usedFreeze = true;
+      cursor = shiftDay(cursor, -1);
+      continue;
+    }
+    break;
+  }
+
+  let longest = 0, run = 0, prevD = null;
+  met.forEach((k) => {
+    const d = keyToDate(k);
+    if (prevD && (d - prevD) / DAY === 1) run++; else run = 1;
+    if (run > longest) longest = run;
+    prevD = d;
+  });
+
+  return { current, longest: Math.max(longest, current), freezesLeft: Math.max(0, earned - spent),
+           usedFreeze, activeToday, hitToday, lastDay: met[met.length - 1] };
+}
+
+/* XP rewards showing up, not just being right — a blank still scores,
+   because the alternative is skipping the card you most need to see. */
+const XP_FOR_GRADE = { 1: 5, 2: 9, 3: 13, 4: 15 };
+const XP_DIFF = { easy: 1, medium: 1.15, hard: 1.35 };
+
+function xpOf(reviews, questions) {
+  const byId = new Map(questions.map((q) => [q.id, q]));
+  return reviews.reduce((sum, r) => {
+    const q = byId.get(r.qid);
+    const mult = XP_DIFF[(q && q.difficulty) || "medium"] || 1;
+    const cov = r.coverage != null ? 1 + r.coverage * 0.4 : 1;   /* spoken and thorough pays more */
+    return sum + Math.round((XP_FOR_GRADE[r.grade] || 8) * mult * cov);
+  }, 0);
+}
+/* level L starts at 150 * L(L-1)/2 XP: 150, 450, 900, 1500, 2250 ... */
+const xpForLevel = (L) => Math.round(150 * (L * (L - 1)) / 2);
+function levelOf(xp) {
+  let L = 1;
+  while (xpForLevel(L + 1) <= xp) L++;
+  const base = xpForLevel(L), next = xpForLevel(L + 1);
+  return { level: L, base, next, into: xp - base, span: next - base, pct: Math.round(((xp - base) / (next - base)) * 100) };
+}
+
+/** True retention: of the reviews that were genuinely due, how many passed.
+    Same-day relearns are excluded, as they measure nothing about memory. */
+function retentionStats(reviews) {
+  const byQ = new Map();
+  reviews.slice().sort((a, b) => a.at - b.at).forEach((r) => {
+    const prev = byQ.get(r.qid);
+    r._gap = prev ? (r.at - prev) / DAY : null;
+    byQ.set(r.qid, r.at);
+  });
+  const real = reviews.filter((r) => r._gap != null && r._gap >= 0.9);
+  const passed = real.filter((r) => r.grade >= 2).length;
+  const buckets = [
+    { label: "1–3d", lo: 0.9, hi: 3 },
+    { label: "3–7d", lo: 3, hi: 7 },
+    { label: "1–3w", lo: 7, hi: 21 },
+    { label: "3w+", lo: 21, hi: 1e9 },
+  ].map((b) => {
+    const inB = real.filter((r) => r._gap >= b.lo && r._gap < b.hi);
+    return { ...b, n: inB.length, rate: inB.length ? inB.filter((r) => r.grade >= 2).length / inB.length : null };
+  });
+  return { n: real.length, rate: real.length ? passed / real.length : null, buckets };
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function weekdayStats(reviews) {
+  return WEEKDAYS.map((label, i) => {
+    const inD = reviews.filter((r) => new Date(r.at).getDay() === i);
+    return { label, n: inD.length, rate: inD.length ? inD.filter((r) => r.grade >= 2).length / inD.length : null };
+  });
+}
+
+/** Achievements, all recomputed from data — nothing to store or fake. */
+function badgesOf({ reviews, questions, concepts, languages, streak, level }) {
+  const spoken = reviews.filter((r) => r.transcript_len > 0 || r.transcriptLen > 0).length;
+  const full = reviews.filter((r) => r.coverage != null && r.coverage >= 0.999).length;
+  const angleFull = concepts.filter((c) => {
+    const set = new Set(questions.filter((q) => q.conceptId === c.id && !q.variantOf).map((q) => q.angle));
+    return set.size >= ANGLES.length;
+  }).length;
+  const durable = questions.filter((q) => (q.stability || 0) >= 21).length;
+  const def = (icon, name, have, need, note) => ({
+    icon, name, have, need, note, got: have >= need,
+    pct: Math.min(100, Math.round((have / need) * 100)),
+  });
+  return [
+    def("🔥", "Unbroken", streak.longest, 7, "7-day streak"),
+    def("🗓", "Month deep", streak.longest, 30, "30-day streak"),
+    def("💯", "Century", reviews.length, 100, "100 reviews"),
+    def("🎙", "Out loud", spoken, 25, "25 spoken answers"),
+    def("🎯", "Nothing skipped", full, 10, "10 full-coverage answers"),
+    def("🗺", "Cartographer", angleFull, 1, "a concept at 6/6 angles"),
+    def("🏛", "Vault", durable, 20, "20 cards held 3wk+"),
+    def("📚", "Stocked", questions.length, 50, "50 questions banked"),
+    def("🌐", "Polyglot", languages.length, 3, "3 languages"),
+    def("⭐", "Level 5", level.level, 5, "reach level 5"),
+  ];
+}
+
 /* --------------------------- concept helpers --------------------------- */
 const cnorm = (s) => norm(s).replace(/\s+/g, "");
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
@@ -569,20 +1071,15 @@ function lexCoverage(beat, transcript) {
    STORAGE — SQLite compiled to WASM, persisted as one real database file
    in the Origin Private File System.
 
-   Why this shape:
-   - sql.js holds the database in memory and hands back the raw bytes, so
-     the file on disk is a byte-for-byte valid SQLite database. You can pull
-     it out and open it in DB Browser or the sqlite3 CLI.
-   - Writes go through OPFS createWritable(), which commits atomically on
-     close, so a crash mid-save cannot leave a half-written database.
-   - No COOP/COEP headers needed, which matters because GitHub Pages cannot
-     set them. That rules out sqlite-wasm's SAHPool VFS.
-   - The cost is a whole-file rewrite per save, debounced. Fine into the
-     thousands of rows; it is the honest trade for one portable file.
-   - If OPFS or the CDN is unavailable, everything falls back to IndexedDB
-     and the app behaves identically.
+   Schema is applied in three steps, and the order matters: an index cannot
+   reference a column that ALTER TABLE has not added yet. Creating them all
+   in one statement blows up on any database written before the languages
+   feature shipped, which then looks like a silent fallback to IndexedDB.
    ====================================================================== */
 
+/* Step 1 — tables only. CREATE TABLE IF NOT EXISTS never modifies a table
+   that already exists on disk, so an older bank.sqlite3 keeps its old shape
+   here and gets grown by upgradeSchema below. */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS concepts (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]'
@@ -604,10 +1101,6 @@ CREATE TABLE IF NOT EXISTS questions (
   stability REAL, difficulty_f REAL, interval REAL,
   variant_of TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_q_due ON questions(due);
-CREATE INDEX IF NOT EXISTS idx_q_concept ON questions(concept_id);
-CREATE INDEX IF NOT EXISTS idx_q_language ON questions(language_id);
-CREATE INDEX IF NOT EXISTS idx_q_variant ON questions(variant_of);
 CREATE TABLE IF NOT EXISTS vectors (
   id TEXT PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
   dim INTEGER NOT NULL, v BLOB NOT NULL
@@ -618,22 +1111,37 @@ CREATE TABLE IF NOT EXISTS reviews (
   stability REAL, difficulty REAL, interval REAL,
   coverage REAL, transcript_len INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_r_qid ON reviews(qid);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 `;
-const SCHEMA_VERSION = 1;
+
+/* Step 3 — indexes, applied only after every column is guaranteed present. */
+const INDEXES = `
+CREATE INDEX IF NOT EXISTS idx_q_due ON questions(due);
+CREATE INDEX IF NOT EXISTS idx_q_concept ON questions(concept_id);
+CREATE INDEX IF NOT EXISTS idx_q_language ON questions(language_id);
+CREATE INDEX IF NOT EXISTS idx_q_variant ON questions(variant_of);
+CREATE INDEX IF NOT EXISTS idx_r_qid ON reviews(qid);
+`;
+
+const SCHEMA_VERSION = 2;
 const DB_FILE = "bank.sqlite3";
 const LEGACY_KEY = "qbank:v1";
 const IDB_NAME = "qbank";
 
-/* `CREATE TABLE IF NOT EXISTS` never touches a table that already exists on
-   disk, so a database saved before the languages feature shipped needs an
-   explicit ALTER TABLE to grow the new column. Safe to call every boot. */
-function ensureLanguageColumn(db) {
+/* Step 2 — grow an older table to the current shape. Idempotent: reads
+   PRAGMA table_info first, so a second boot adds nothing. */
+function upgradeSchema(db) {
   const info = db.exec("PRAGMA table_info(questions)");
   const names = info.length ? info[0].values.map((r) => r[1]) : [];
-  if (!names.includes("language_id")) db.run("ALTER TABLE questions ADD COLUMN language_id TEXT");
-  if (!names.includes("code_example")) db.run("ALTER TABLE questions ADD COLUMN code_example TEXT");
+  if (names.length && !names.includes("language_id")) db.run("ALTER TABLE questions ADD COLUMN language_id TEXT");
+  if (names.length && !names.includes("code_example")) db.run("ALTER TABLE questions ADD COLUMN code_example TEXT");
+}
+
+/** Tables, then columns, then indexes. Every database opens through this. */
+function openBank(db) {
+  db.run(SCHEMA);
+  upgradeSchema(db);
+  db.run(INDEXES);
 }
 
 /* ---- row mapping: snake_case on disk, camelCase in the app ---- */
@@ -735,8 +1243,7 @@ const Storage = {
       const file = await this.handle.getFile();
       const buf = new Uint8Array(await file.arrayBuffer());
       this.db = buf.byteLength ? new SQL.Database(buf) : new SQL.Database();
-      this.db.run(SCHEMA);
-      ensureLanguageColumn(this.db);
+      openBank(this.db);
       this.db.run("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)", [String(SCHEMA_VERSION)]);
       this.bytes = buf.byteLength;
       this.backend = "sqlite";
@@ -805,8 +1312,8 @@ const Storage = {
     const t = probe.exec("SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('questions','concepts')");
     const found = t.length ? t[0].values[0][0] : 0;
     if (found < 2) { probe.close(); throw new Error("that file is not a Bank database"); }
-    probe.run(SCHEMA);
-    ensureLanguageColumn(probe);
+    /* same three-step upgrade, so an older backup restores cleanly */
+    openBank(probe);
     if (this.db) this.db.close();
     this.db = probe;
     this.dirty = true;
@@ -848,22 +1355,22 @@ const Repo = {
   async load() {
     if (Storage.backend === "sqlite") {
       const questions = Storage.all("SELECT " + Q_COLS + " FROM questions").map(rowToQ);
-      const concepts = Storage.all("SELECT id,name,aliases FROM concepts").map((r) => {
+      const parseNamed = (r) => {
         let aliases = [];
         try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
         return { id: r.id, name: r.name, aliases };
-      });
-      const languages = Storage.all("SELECT id,name,aliases FROM languages").map((r) => {
-        let aliases = [];
-        try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
-        return { id: r.id, name: r.name, aliases };
-      });
+      };
+      const concepts = Storage.all("SELECT id,name,aliases FROM concepts").map(parseNamed);
+      const languages = Storage.all("SELECT id,name,aliases FROM languages").map(parseNamed);
       const m = Storage.all("SELECT v FROM meta WHERE k='settings'");
       let settings = {};
       if (m.length) { try { settings = JSON.parse(m[0].v); } catch (e) {} }
       return { questions, concepts, languages, settings };
     }
-    const [questions, concepts, languages, meta] = await Promise.all([IDB.all("questions"), IDB.all("concepts"), IDB.all("languages"), IDB.all("meta")]);
+    const [questions, concepts, languages, meta] = await Promise.all([
+      IDB.all("questions"), IDB.all("concepts"),
+      IDB.all("languages").catch(() => []), IDB.all("meta"),
+    ]);
     const s = meta.find((x) => x.k === "settings");
     return { questions, concepts, languages, settings: (s && s.v) || {} };
   },
@@ -1195,7 +1702,7 @@ const STARTER = () => {
   return {
     concepts: cs,
     questions: raw.map(([text, concept, angle, answer], i) => ({
-      id: uid(), text, conceptId: byName(concept), angle, answer,
+      id: uid(), text, conceptId: byName(concept), languageId: null, angle, answer, codeExample: "",
       difficulty: i % 3 === 0 ? "hard" : "medium",
       due: t, created: t - i * 1000, last: null,
       reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null, variantOf: null,
@@ -1203,7 +1710,7 @@ const STARTER = () => {
   };
 };
 
-const DEFAULT_SETTINGS = { talkTarget: 90, retention: 0.9, mlEnabled: false, voice: true, theme: "light" };
+const DEFAULT_SETTINGS = { talkTarget: 90, retention: 0.9, mlEnabled: false, voice: true, theme: "light", reviewMode: "spoken", dailyGoal: 10 };
 
 /* ============================== app shell ============================== */
 function QuestionBank() {
@@ -1215,13 +1722,37 @@ function QuestionBank() {
   const [vecs, setVecs] = useState(new Map());
   const [mlState, setMlState] = useState({ state: "off", progress: 0, error: null });
   const [backfill, setBackfill] = useState(null);
-  const [tab, setTab] = useState("add");
+  const TABS = ["add", "review", "coverage", "stats", "bank", "data"];
+  const [tab, setTabState] = useState(() => {
+    const h = (typeof location !== "undefined" ? location.hash : "").replace("#", "");
+    return TABS.indexOf(h) >= 0 ? h : "add";
+  });
+  /* pushState per tab so Android's back button walks back through tabs
+     rather than dropping straight out of the app */
+  const setTab = useCallback((next) => {
+    setTabState((cur) => {
+      if (cur !== next && typeof history !== "undefined" && history.pushState) {
+        try { history.pushState({ tab: next }, "", "#" + next); } catch (e) {}
+      }
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const onPop = (e) => {
+      const fromState = e.state && e.state.tab;
+      const fromHash = (location.hash || "").replace("#", "");
+      setTabState(TABS.indexOf(fromState) >= 0 ? fromState : (TABS.indexOf(fromHash) >= 0 ? fromHash : "add"));
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const [prefill, setPrefill] = useState(null);
   const [editItem, setEditItem] = useState(null);
   const [fatal, setFatal] = useState(null);
   const [notice, setNotice] = useState(null);
   const [store, setStore] = useState(null);
   const [migrated, setMigrated] = useState(null);
+  const [reviews, setReviews] = useState([]);
 
   useEffect(() => ML.on((state, progress, error) => setMlState({ state, progress, error })), []);
 
@@ -1234,6 +1765,8 @@ function QuestionBank() {
         const legacy = await Repo.migrateLegacy();
         const d = await Repo.load();
         const v = await Repo.allVectors();
+        const rv = await Repo.allReviews().catch(() => []);
+        setReviews(rv);
         setQuestions(d.questions);
         setConcepts(d.concepts);
         setLanguages(d.languages || []);
@@ -1242,8 +1775,11 @@ function QuestionBank() {
         setStore(Storage.info());
         /* smart default: land on Review when there's a queue to clear,
            otherwise Add — so opening the app is never a dead end. */
-        const dueNow = d.questions.filter((q) => !q.variantOf && isDue(q)).length;
-        setTab(dueNow > 0 ? "review" : "add");
+        const asked = (location.hash || "").replace("#", "");
+        if (TABS.indexOf(asked) < 0) {
+          const dueNow = d.questions.filter((q) => !q.variantOf && isDue(q)).length;
+          setTabState(dueNow > 0 ? "review" : "add");
+        }
         if (lifted) setMigrated({ from: "IndexedDB", n: lifted });
         else if (legacy) setMigrated({ from: "localStorage", n: legacy });
         setBoot("ready");
@@ -1258,7 +1794,7 @@ function QuestionBank() {
     })();
   }, []);
 
-  /* ---- writes go through here so IndexedDB and memory never diverge ---- */
+  /* ---- writes go through here so the store and memory never diverge ---- */
   const putQ = useCallback(async (q) => {
     setQuestions((prev) => { const i = prev.findIndex((x) => x.id === q.id); if (i < 0) return [q, ...prev]; const c = [...prev]; c[i] = q; return c; });
     try { await Repo.saveQuestion(q); setStore(Storage.info()); } catch (e) { setFatal("Save failed. Your last change is only in memory."); }
@@ -1277,6 +1813,10 @@ function QuestionBank() {
   }, []);
   const putSettings = useCallback(async (patch) => {
     setSettings((prev) => { const next = { ...prev, ...patch }; Repo.saveSettings(next).catch(() => {}); return next; });
+  }, []);
+  const pushReview = useCallback(async (r) => {
+    setReviews((prev) => [...prev, r]);
+    try { await Repo.logReview(r); } catch (e) {}
   }, []);
   const putVec = useCallback(async (id, v) => {
     setVecs((prev) => { const m = new Map(prev); m.set(id, v); return m; });
@@ -1305,6 +1845,14 @@ function QuestionBank() {
   }, [questions, vecs]);
 
   const mlReady = mlState.state === "ready" && !backfill;
+  const dueCount = questions.filter((q) => !q.variantOf && isDue(q)).length;
+  const dueShown = useCountUp(dueCount, 620);
+  const counts = useMemo(() => dailyCounts(reviews), [reviews]);
+  const streak = useMemo(() => computeStreak(counts, settings.dailyGoal || 1), [counts, settings.dailyGoal]);
+  const xp = useMemo(() => xpOf(reviews, questions), [reviews, questions]);
+  const level = useMemo(() => levelOf(xp), [xp]);
+  const streakShown = useCountUp(streak.current, 620);
+  const todayCount = counts.get(dayKey(now())) || 0;
 
   if (boot === "loading") {
     return <div className="qb" data-theme={settings.theme || "light"}><style>{CSS}</style><div className="wrap">
@@ -1312,8 +1860,9 @@ function QuestionBank() {
     </div></div>;
   }
 
-  const dueCount = questions.filter((q) => !q.variantOf && isDue(q)).length;
-  const ctx = { questions, concepts, languages, settings, vecs, mlReady, putQ, dropQ, putC, putL, putVec, putSettings, store, refreshStore: () => setStore(Storage.info()) };
+  const ctx = { questions, concepts, languages, settings, vecs, mlReady, putQ, dropQ, putC, putL, putVec,
+    putSettings, store, refreshStore: () => setStore(Storage.info()),
+    reviews, pushReview, counts, streak, xp, level, todayCount };
 
   return (
     <div className="qb" data-theme={settings.theme || "light"}>
@@ -1328,9 +1877,16 @@ function QuestionBank() {
 
           <div className="side-stats">
             <div className={"stamp" + (dueCount === 0 ? " zero" : "")} title="Questions due for review today">
-              <b>{dueCount}</b>
+              <b>{dueShown}</b>
               <span>due today</span>
             </div>
+            <button className={"streak" + (streak.current > 0 ? " live" : "")} onClick={() => setTab("stats")}
+              title={streak.current > 0
+                ? streak.current + " day streak · " + streak.freezesLeft + " rest day" + (streak.freezesLeft === 1 ? "" : "s") + " banked"
+                : "Review anything today to start a streak"}>
+              <span className="fire">🔥</span>
+              <span><b>{streakShown}</b><small>day streak</small></span>
+            </button>
             <button
               className={"mlpill " + (mlState.state === "ready" ? "on" : mlState.state === "loading" ? "load" : "")}
               onClick={() => setTab("data")}
@@ -1349,7 +1905,7 @@ function QuestionBank() {
           </div>
 
           <div className="tabs" role="tablist">
-            {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["bank", "Bank"], ["data", "Settings"]].map(([k, label]) => (
+            {[["add", "Add"], ["review", "Review"], ["coverage", "Coverage"], ["stats", "Stats"], ["bank", "Bank"], ["data", "Settings"]].map(([k, label]) => (
               <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
                 {label}{k === "review" && dueCount > 0 && <span className="badge">{dueCount}</span>}
               </button>
@@ -1357,7 +1913,7 @@ function QuestionBank() {
           </div>
         </aside>
 
-        <main className="main">
+        <main className="main" key={tab}>
           {fatal && <div className="alert stop" style={{ marginTop: 0, marginBottom: 14 }}><b>Storage problem</b>{fatal}</div>}
           {notice && <div className="alert warn" style={{ marginTop: 0, marginBottom: 14 }}>
             <b>Fallback storage</b>{notice}
@@ -1367,28 +1923,29 @@ function QuestionBank() {
             <b>Moved into the database file</b>
             {migrated.n} question{migrated.n === 1 ? "" : "s"} lifted out of {migrated.from} into bank.sqlite3, with review history intact.
             <button className="btn tiny line" style={{ marginTop: 9 }} onClick={() => setMigrated(null)}>Dismiss</button>
-        </div>}
-        {backfill && (
-          <div className="alert ml" style={{ marginTop: 0, marginBottom: 14 }}>
-            <b>Indexing your bank</b>
-            Building meaning vectors — {backfill.done} of {backfill.total}.
-            <div className="bar"><i style={{ width: Math.round((backfill.done / backfill.total) * 100) + "%" }} /></div>
-          </div>
-        )}
+          </div>}
+          {backfill && (
+            <div className="alert ml" style={{ marginTop: 0, marginBottom: 14 }}>
+              <b>Indexing your bank</b>
+              Building meaning vectors — {backfill.done} of {backfill.total}.
+              <div className="bar"><i style={{ width: Math.round((backfill.done / backfill.total) * 100) + "%" }} /></div>
+            </div>
+          )}
 
-        {tab === "add" && <AddView ctx={ctx} prefill={prefill} clearPrefill={() => setPrefill(null)}
-          editItem={editItem} clearEdit={() => setEditItem(null)} />}
-        {tab === "review" && <ReviewView ctx={ctx} goAdd={() => setTab("add")} />}
-        {tab === "coverage" && <CoverageView ctx={ctx} onGap={(p) => { setPrefill(p); setTab("add"); }} />}
-        {tab === "bank" && <BankView ctx={ctx} goAdd={() => setTab("add")}
-          onEdit={(item) => { setEditItem(item); setTab("add"); }} seed={async () => {
-          const s = STARTER();
-          await Repo.saveConcepts(s.concepts); await Repo.saveQuestions(s.questions);
-          setConcepts(s.concepts); setQuestions(s.questions);
-        }} />}
-        {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill} store={store}
-          enableML={() => { putSettings({ mlEnabled: true }); enableML(); }}
-          setAll={(q, c, l) => { setQuestions(q); setConcepts(c); if (l) setLanguages(l); }} />}
+          {tab === "add" && <AddView ctx={ctx} prefill={prefill} clearPrefill={() => setPrefill(null)}
+            editItem={editItem} clearEdit={() => setEditItem(null)} />}
+          {tab === "review" && <ReviewView ctx={ctx} goAdd={() => setTab("add")} />}
+          {tab === "coverage" && <CoverageView ctx={ctx} onGap={(p) => { setPrefill(p); setTab("add"); }} />}
+          {tab === "bank" && <BankView ctx={ctx} goAdd={() => setTab("add")}
+            onEdit={(item) => { setEditItem(item); setTab("add"); }} seed={async () => {
+            const s = STARTER();
+            await Repo.saveConcepts(s.concepts); await Repo.saveQuestions(s.questions);
+            setConcepts(s.concepts); setQuestions(s.questions);
+          }} />}
+          {tab === "stats" && <StatsView ctx={ctx} />}
+          {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill} store={store}
+            enableML={() => { putSettings({ mlEnabled: true }); enableML(); }}
+            setAll={(q, c, l) => { setQuestions(q); setConcepts(c); if (l) setLanguages(l); }} />}
         </main>
       </div>
     </div>
@@ -1524,6 +2081,9 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
 
   const top = matches.length ? matches[0] : null;
   const score = top ? top.score : 0;
+  /* the ticks track the score instantly; only the big readout eases, so the
+     gauge still reads as a live measurement rather than a progress bar */
+  const scoreShown = useCountUp(active ? score : 0, 380);
   const bnd = active ? band(score) : "clear";
   const blocked = active && bnd === "collide" && !override;
 
@@ -1569,7 +2129,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
         return { c, conf: null, hit };
       })
       .filter((x) => x.hit > 0).sort((a, b) => b.hit - a.hit).slice(0, 4);
-  }, [debounced, active, liveVec, questions, concepts, vecs]);
+  }, [debounced, active, liveVec, questions, concepts, vecs, editingId]);
 
   /* accept the top suggestion automatically until the user overrides it */
   useEffect(() => {
@@ -1690,8 +2250,8 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
 
         <div className="gauge">
           <div className="gauge-top">
-            <div className="gauge-num" style={{ color: active ? BAND_COLOR[bnd] : "var(--ledoff)" }}>
-              {active ? score : "—"}<span>{active ? "%" : ""}</span>
+            <div className="gauge-num" key={bnd} style={{ color: active ? BAND_COLOR[bnd] : "var(--ledoff)" }}>
+              {active ? scoreShown : "—"}<span>{active ? "%" : ""}</span>
             </div>
             <div className="gauge-verdict">
               <b style={{ color: active ? BAND_COLOR[bnd] : "var(--soft)" }}>{active ? BAND_TEXT[bnd][0] : "Waiting for a question"}</b>
@@ -1701,10 +2261,13 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
           <div className="ticks" aria-hidden="true">
             {Array.from({ length: 20 }).map((_, i) => {
               const lit = active && score >= (i + 1) * 5;
-              return <i key={i} className={lit ? "lit" : ""} style={lit ? { background: BAND_COLOR[bnd] } : undefined} />;
+              const d = { transitionDelay: (lit ? i * 13 : (19 - i) * 7) + "ms" };
+              return <i key={i} className={lit ? "lit" : ""}
+                style={lit ? { ...d, background: BAND_COLOR[bnd] } : d} />;
             })}
           </div>
           <div className="ticks-scale"><span>NEW</span><span>OVERLAP</span><span>DUPLICATE</span></div>
+          {active && thinking && <div className="measuring" aria-hidden="true"><i /></div>}
           {active && top && (
             <div className="split">
               <span>wording <b>{top.lex}%</b></span>
@@ -1924,11 +2487,11 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
 
       <div className="card">
         <div className="row">
-          <button className="btn" disabled={!text.trim() || blocked} onClick={() => save(!editingId && override && bnd === "collide")}>
+          <button className="btn" disabled={!text.trim() || !showMore || blocked} onClick={() => save(!editingId && override && bnd === "collide")}>
             {blocked ? "Too close to save"
+              : !showMore ? "Keep typing…"
               : editingId ? "Save changes"
               : override && bnd === "collide" ? "Save as a variant"
-              : !showMore ? "Keep typing…"
               : "Add to the bank"}
           </button>
           {editingId && <button className="btn line" onClick={cancelEdit}>Cancel</button>}
@@ -2026,8 +2589,149 @@ const GRADES = [
   { g: 4, name: "Fluent", sub: "" },
 ];
 
+
+/* ==================== FLASHCARD FOCUS MODE (overlay) ==================== */
+/* A full-screen stage rather than a section of the page: one card at a time,
+   tap or Space to flip, 1-4 or a swipe to grade. The flip is a real rotateY
+   on a preserve-3d element, so the back is physically the other side. */
+function FlashcardOverlay({ ctx, queue, doneCount, onGrade, onClose }) {
+  const { concepts, languages, settings } = ctx;
+  const card = queue[0];
+  const [flipped, setFlipped] = useState(false);
+  const [exit, setExit] = useState("");
+  const [hintSwipe, setHintSwipe] = useState(false);
+  const touch = useRef(null);
+  const busy = useRef(false);
+
+  /* the page behind must not scroll while the stage is up */
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  useEffect(() => { setFlipped(false); setExit(""); busy.current = false; }, [card && card.id]);
+
+  /* animate the card off the stage first, then let the parent reschedule it */
+  const commit = useCallback((g) => {
+    if (!card || busy.current) return;
+    busy.current = true;
+    setExit(g === 1 ? "left" : g === 4 ? "right" : "up");
+    setTimeout(() => onGrade(card, g), 235);
+  }, [card, onGrade]);
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+      if (!card || e.metaKey || e.ctrlKey || e.repeat) return;
+      if (e.code === "Space") { e.preventDefault(); setFlipped(true); return; }
+      if (flipped && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) {
+        e.preventDefault(); commit(Number(e.key));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [flipped, card, commit, onClose]);
+
+  function onTouchStart(e) {
+    const t = e.touches[0];
+    touch.current = { x: t.clientX, y: t.clientY };
+  }
+  function onTouchEnd(e) {
+    if (!touch.current) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touch.current.x, dy = t.clientY - touch.current.y;
+    touch.current = null;
+    if (Math.abs(dx) < 62 && Math.abs(dy) < 62) return;   /* a tap, handled by onClick */
+    if (!flipped) { setFlipped(true); return; }
+    /* only a decisive sideways swipe grades, so a scroll never counts as one */
+    if (Math.abs(dx) > Math.abs(dy) * 1.6) commit(dx < 0 ? 1 : 3);
+  }
+
+  const total = doneCount + queue.length;
+  const pct = total ? Math.round((doneCount / total) * 100) : 100;
+  const concept = card && concepts.find((c) => c.id === card.conceptId);
+  const language = card && languages.find((l) => l.id === card.languageId);
+  const beats = card ? splitBeats(card.answer) : [];
+
+  return (
+    <div className="fc-overlay" role="dialog" aria-modal="true" aria-label="Flashcard session">
+      <div className="fc-top">
+        <span className="fc-count">{Math.min(doneCount + 1, total)} / {total}</span>
+        <div className="fc-progress"><i style={{ width: pct + "%" }} /></div>
+        <button className="fc-close" onClick={onClose}>Esc ✕</button>
+      </div>
+
+      {card ? (
+        <>
+          <div className="fc-stage" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+            {queue.length > 2 && <div className="fc-ghost g2" />}
+            {queue.length > 1 && <div className="fc-ghost g1" />}
+            <div className={"fc-slot in" + (exit ? " out-" + exit : "")}>
+              <div className={"fc-card" + (flipped ? " flipped" : "")}
+                onClick={() => { if (!flipped) { setFlipped(true); setHintSwipe(true); } }}>
+
+                <div className="fc-face fc-front">
+                  <span className="fc-meta">
+                    {concept ? concept.name : "Unfiled"}{language ? " · " + language.name : ""} · {angleName(card.angle)}
+                  </span>
+                  <div className="fc-q">{card.text}</div>
+                  <span className="fc-tap">Tap to flip</span>
+                </div>
+
+                <div className="fc-face fc-back">
+                  <span className="eyebrow">Answer</span>
+                  {card.answer ? (
+                    beats.length > 1
+                      ? beats.map((b, i) => (
+                          <div className="fc-beat" key={i}
+                            style={{ animation: "beatIn .34s var(--ease-out) both", animationDelay: (120 + i * 70) + "ms" }}>
+                            <i>{i + 1}</i><p>{b}</p>
+                          </div>
+                        ))
+                      : <p className="fc-plain">{card.answer}</p>
+                  ) : (
+                    <p className="fc-plain" style={{ color: "var(--soft)" }}>
+                      No notes on this one yet. Add them from Bank while it's fresh.
+                    </p>
+                  )}
+                  {card.codeExample && <pre className="code-block">{card.codeExample}</pre>}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {flipped ? (
+            <>
+              <div className="fc-grade">
+                {GRADES.map(({ g, name }) => (
+                  <button key={g} className={"g" + g} onClick={() => commit(g)}>
+                    <b>{name}</b>
+                    <small>{previewDays(card, g, settings.retention)}</small>
+                  </button>
+                ))}
+              </div>
+              <p className="fc-foot">{hintSwipe ? "1–4 · or swipe ← blanked / solid →" : "Press 1–4"}</p>
+            </>
+          ) : (
+            <p className="fc-foot">Space to flip · Esc to leave</p>
+          )}
+        </>
+      ) : (
+        <div className="fc-done">
+          <h3>Deck clear.</h3>
+          <p>{doneCount} card{doneCount === 1 ? "" : "s"} through. Every one is rescheduled by how well it went.</p>
+          <button className="btn" onClick={onClose}>Done</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReviewView({ ctx, goAdd }) {
-  const { questions, concepts, languages, settings, mlReady, putQ, putSettings } = ctx;
+  const { questions, concepts, languages, settings, mlReady, putQ, putSettings, pushReview, todayCount, streak, level } = ctx;
+  const mode = settings.reviewMode === "flashcard" ? "flashcard" : "spoken";
+  /* only spoken practice runs through phases now; flashcards live in the overlay */
   const [phase, setPhase] = useState("ask");
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
@@ -2035,9 +2739,8 @@ function ReviewView({ ctx, goAdd }) {
   const [results, setResults] = useState(null);
   const [scoring, setScoring] = useState(false);
   const [manual, setManual] = useState("");
-  const [flipAnim, setFlipAnim] = useState(false);
+  const [focus, setFocus] = useState(false);
   const dict = useDictation();
-  const mode = settings.reviewMode === "flashcard" ? "flashcard" : "spoken";
 
   const queue = useMemo(() => questions
     .filter((q) => !q.variantOf && isDue(q) && !done.includes(q.id))
@@ -2047,17 +2750,22 @@ function ReviewView({ ctx, goAdd }) {
 
   useEffect(() => { if (!running) return; const t = setInterval(() => setElapsed((e) => e + 1), 1000); return () => clearInterval(t); }, [running]);
   useEffect(() => {
-    setPhase(mode === "flashcard" ? "front" : "ask");
-    setElapsed(0); setRunning(false); setResults(null); setManual(""); setFlipAnim(false);
+    setPhase("ask");
+    setElapsed(0); setRunning(false); setResults(null); setManual("");
   }, [card && card.id, mode]);
 
   const target = settings.talkTarget || 90;
   const beats = useMemo(() => (card ? splitBeats(card.answer) : []), [card]);
-
-  function flipToBack() {
-    setFlipAnim(true);
-    setTimeout(() => { setPhase("back"); setFlipAnim(false); }, 160);
-  }
+  const queueShown = useCountUp(queue.length, 520);
+  const doneShown = useCountUp(done.length, 520);
+  const goal = settings.dailyGoal || 10;
+  const goalPct = Math.min(100, Math.round((todayCount / goal) * 100));
+  const justHit = useRef(false);
+  const [celebrate, setCelebrate] = useState(false);
+  useEffect(() => {
+    if (todayCount >= goal && !justHit.current) { justHit.current = true; setCelebrate(true); }
+    if (todayCount < goal) justHit.current = false;
+  }, [todayCount, goal]);
 
   async function finishTalking() {
     setRunning(false);
@@ -2074,12 +2782,12 @@ function ReviewView({ ctx, goAdd }) {
     const patch = schedule(card, g, settings.retention);
     const next = { ...card, ...patch };
     await putQ(next);
-    Repo.logReview({
+    pushReview({
       qid: card.id, at: now(), grade: g, elapsed,
       stability: patch.stability, difficulty: patch.difficultyF, interval: patch.interval,
       coverage: results ? results.filter((r) => r.state === "hit").length / results.length : null,
       transcriptLen: (dict.text || manual || "").length,
-    }).catch(() => {});
+    });
     setDone((d) => [...d, card.id]);
   }
 
@@ -2090,9 +2798,11 @@ function ReviewView({ ctx, goAdd }) {
       const tag = (e.target && e.target.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if (focus) return;   /* the overlay handles its own keys */
+      if (!card) return;
       if (e.code === "Space") {
         if (mode === "flashcard") {
-          if (phase === "front") { e.preventDefault(); flipToBack(); }
+          e.preventDefault(); setFocus(true);
         } else if (phase === "ask") {
           e.preventDefault();
           if (dict.supported) dict.start();
@@ -2104,7 +2814,7 @@ function ReviewView({ ctx, goAdd }) {
         }
       } else if (
         (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4") &&
-        ((mode === "flashcard" && phase === "back") || (mode === "spoken" && phase === "check"))
+        mode === "spoken" && phase === "check"
       ) {
         e.preventDefault();
         grade(Number(e.key));
@@ -2112,7 +2822,7 @@ function ReviewView({ ctx, goAdd }) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, mode, dict, manual, card, beats, mlReady, results, elapsed, target, settings.retention]);
+  }, [phase, mode, focus, dict, manual, card, beats, mlReady, results, elapsed, target, settings.retention]);
 
   if (!questions.length) {
     return <div className="card"><div className="empty">
@@ -2133,12 +2843,123 @@ function ReviewView({ ctx, goAdd }) {
     const nxt = ahead[0];
     return <>
       {modeSwitch}
+      {goalPanel}
       <div className="card"><div className="empty">
         <h3>Queue clear.</h3>
-        <p>{done.length ? "You answered " + done.length + " out loud. " : ""}{nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}</p>
+        <p>{done.length ? "You worked through " + done.length + ". " : ""}{nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}</p>
         <button className="btn line" onClick={goAdd}>Add a question</button>
       </div></div>
     </>;
+  }
+
+
+  /* The session panel: one ring, one number, one line of consequence.
+     Progress is counted from the reviews table, so closing the tab
+     mid-session does not lose it. */
+  const goalPanel = (
+    <div className={"card" + (celebrate ? " burst" : "")}>
+      {celebrate && Array.from({ length: 16 }).map((_, i) => {
+        const ang = (i / 16) * Math.PI * 2, dist = 70 + (i % 4) * 26;
+        const hues = ["var(--indigo)", "var(--violet)", "var(--clear)", "var(--gold)"];
+        return <span key={i} style={{
+          background: hues[i % 4],
+          "--dx": Math.cos(ang) * dist + "px", "--dy": Math.sin(ang) * dist + "px",
+          animationDelay: (i * 18) + "ms",
+        }} />;
+      })}
+      <div className="ring-row">
+        <div className="ring">
+          <svg width="78" height="78" viewBox="0 0 78 78">
+            <defs>
+              <linearGradient id="ringgrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="var(--indigo)" /><stop offset="100%" stopColor="var(--violet)" />
+              </linearGradient>
+            </defs>
+            <circle className="track" cx="39" cy="39" r="33" />
+            <circle className="fill" cx="39" cy="39" r="33"
+              strokeDasharray={2 * Math.PI * 33}
+              strokeDashoffset={2 * Math.PI * 33 * (1 - goalPct / 100)} />
+          </svg>
+          <div className="label"><b>{todayCount}</b><span>OF {goal}</span></div>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <span className="eyebrow" style={{ marginBottom: 5 }}>Today's session</span>
+          <p className="note" style={{ marginTop: 0 }}>
+            {todayCount >= goal
+              ? "Goal met — day " + streak.current + " of the streak is locked in. Anything more is free."
+              : streak.current > 0
+                ? (goal - todayCount) + " more keeps a " + streak.current + "-day streak alive."
+                : (goal - todayCount) + " more starts a streak."}
+          </p>
+          <div className="level">
+            <div className="level-top">
+              <b>Level {level.level}</b>
+              <span>{level.into} / {level.span} XP</span>
+            </div>
+            <div className="level-bar"><i style={{ width: level.pct + "%" }} /></div>
+          </div>
+        </div>
+      </div>
+      {streak.freezesLeft > 0 && (
+        <p className="hint">
+          {streak.freezesLeft} rest day{streak.freezesLeft === 1 ? "" : "s"} banked — miss one and the streak survives.
+        </p>
+      )}
+      {streak.usedFreeze && <p className="hint">A banked rest day is currently covering a gap.</p>}
+    </div>
+  );
+
+  /* Flashcards run as a full-screen stage rather than inline, so the launcher
+     is all that lives on the page. Spoken practice keeps the page layout. */
+  if (mode === "flashcard") {
+    const withAnswers = queue.filter((x) => x.answer && x.answer.trim()).length;
+    return (
+      <>
+        {modeSwitch}
+        {goalPanel}
+        <div className="card">
+          <span className="eyebrow">Ready to run</span>
+          <div className="deck">
+            <div>
+              <div className="deck-num">{queue.length}</div>
+              <small>card{queue.length === 1 ? "" : "s"} in the deck</small>
+            </div>
+            <div style={{ flex: 1 }}>
+              <p className="note" style={{ marginTop: 0 }}>
+                One card at a time, full screen. Tap to flip, then grade — the same FSRS
+                scheduling as spoken practice, just faster.
+              </p>
+            </div>
+          </div>
+          <button className="btn" style={{ marginTop: 16 }} onClick={() => setFocus(true)}>
+            Start session
+          </button>
+          <p className="hint">
+            {withAnswers === queue.length
+              ? "Every card has answer notes."
+              : (queue.length - withAnswers) + " of " + queue.length + " have no answer notes yet — they'll flip to a blank back."}
+            {" "}Space starts, Esc leaves, 1–4 grade.
+          </p>
+        </div>
+
+        {done.length > 0 && (
+          <div className="stat-row" style={{ marginTop: 14, marginBottom: 0 }}>
+            <div className="stat"><b>{doneShown}</b><small>done today</small></div>
+            <div className="stat"><b>{queueShown}</b><small>still due</small></div>
+          </div>
+        )}
+
+        {focus && (
+          <FlashcardOverlay
+            ctx={ctx}
+            queue={queue}
+            doneCount={done.length}
+            onGrade={(c, g) => grade(g)}
+            onClose={() => setFocus(false)}
+          />
+        )}
+      </>
+    );
   }
 
   const concept = concepts.find((c) => c.id === card.conceptId);
@@ -2151,64 +2972,20 @@ function ReviewView({ ctx, goAdd }) {
   return (
     <>
       {modeSwitch}
+      {goalPanel}
 
       <div className="stat-row">
-        <div className="stat"><b>{queue.length}</b><small>in queue</small></div>
-        <div className="stat"><b>{done.length}</b><small>done today</small></div>
+        <div className="stat"><b>{queueShown}</b><small>in queue</small></div>
+        <div className="stat"><b>{doneShown}</b><small>done today</small></div>
         <div className="stat"><b>{strengthOf(card)}</b><small>strength</small></div>
       </div>
 
-      <div className={"card rev-flip" + (flipAnim ? " flip" : "")}>
+      <div className="card">
         <span className="eyebrow">{concept ? concept.name : "Unfiled"}{language ? " · " + language.name : ""} · {angleName(card.angle)} · {card.difficulty}</span>
         <div className="rev-q">{card.text}</div>
         {variants.length > 0 && <p className="hint" style={{ marginTop: 10 }}>Also asked as: {variants.map((v) => v.text).join(" / ")}</p>}
 
-        {mode === "flashcard" && phase === "front" && (
-          <>
-            <div className="alert info">
-              <b>Recall it before you flip.</b>
-              Say the answer to yourself, then check — flashcards are for fast, repeated recall, not spoken rehearsal.
-            </div>
-            <button className="btn" style={{ marginTop: 12 }} onClick={flipToBack}>Show answer</button>
-            <p className="hint">Press <b>Space</b> to flip.</p>
-          </>
-        )}
-
-        {mode === "flashcard" && phase === "back" && (
-          <div style={{ marginTop: 16 }}>
-            {card.answer ? (
-              beats.length > 1 ? (
-                <>
-                  <span className="eyebrow">Answer</span>
-                  {beats.map((b, i) => (
-                    <div className="beat" key={i}>
-                      <div className="beat-mark" style={{ color: "var(--soft)" }}>·</div>
-                      <div style={{ flex: 1 }}><div className="beat-txt">{b}</div></div>
-                    </div>
-                  ))}
-                </>
-              ) : (
-                <div className="item-ans" style={{ fontSize: 16, whiteSpace: "pre-line" }}>{card.answer}</div>
-              )
-            ) : (
-              <p className="hint">No answer notes saved for this one. Add them from the Bank tab while it's fresh.</p>
-            )}
-            {card.codeExample && <pre className="code-block">{card.codeExample}</pre>}
-
-            <span className="eyebrow" style={{ marginTop: 18 }}>How did that go?</span>
-            <div className="grade">
-              {GRADES.map(({ g, name }) => (
-                <button key={g} onClick={() => grade(g)}>
-                  <b>{g} · {name}</b>
-                  <small>{previewDays(card, g, settings.retention)}</small>
-                </button>
-              ))}
-            </div>
-            <p className="hint">Intervals come from FSRS, fitted to this card's own stability and difficulty. Press <b>1–4</b> to grade.</p>
-          </div>
-        )}
-
-        {mode === "spoken" && phase === "ask" && (
+        {phase === "ask" && (
           <>
             <div className="alert info">
               <b>Say it out loud, on the clock.</b>
@@ -2230,7 +3007,7 @@ function ReviewView({ ctx, goAdd }) {
           </>
         )}
 
-        {mode === "spoken" && phase === "talk" && (
+        {phase === "talk" && (
           <div style={{ marginTop: 16 }}>
             <div className="mic">
               <div className={"mic-orb" + (dict.listening ? " live" : "")}>{dict.listening ? "●" : "○"}</div>
@@ -2253,7 +3030,7 @@ function ReviewView({ ctx, goAdd }) {
           </div>
         )}
 
-        {mode === "spoken" && phase === "check" && (
+        {phase === "check" && (
           <div style={{ marginTop: 16 }}>
             <span className="eyebrow">You spoke for {mm}:{ss} · target {target}s</span>
 
@@ -2273,7 +3050,8 @@ function ReviewView({ ctx, goAdd }) {
                 </div>
                 <span className="eyebrow" style={{ marginTop: 16 }}>Beat by beat</span>
                 {results.map((r, i) => (
-                  <div className={"beat" + (r.state === "miss" ? " miss" : "")} key={i}>
+                  <div className={"beat" + (r.state === "miss" ? " miss" : "")} key={i}
+                    style={{ animationDelay: (i * 85) + "ms" }}>
                     <div className="beat-mark" style={{ color: r.state === "hit" ? "var(--clear)" : r.state === "part" ? "var(--warn)" : "var(--collide)" }}>
                       {r.state === "hit" ? "✓" : r.state === "part" ? "~" : "✗"}
                     </div>
@@ -2341,6 +3119,11 @@ function CoverageView({ ctx, onGap }) {
   const unfiled = questions.filter((q) => !q.conceptId).length;
   const totalCells = concepts.length * ANGLES.length;
   const filled = rows.reduce((s, r) => s + r.covered, 0);
+  const durable = questions.filter((q) => (q.stability || 0) >= 21).length;
+  const thin = rows.filter((r) => r.covered <= 2).length;
+  const filledShown = useCountUp(filled, 700);
+  const durableShown = useCountUp(durable, 700);
+  const thinShown = useCountUp(thin, 700);
 
   if (!concepts.length) {
     return <div className="card"><div className="empty">
@@ -2352,26 +3135,27 @@ function CoverageView({ ctx, onGap }) {
   return (
     <>
       <div className="stat-row">
-        <div className="stat"><b>{filled}<span style={{ fontSize: 13, color: "var(--soft)" }}>/{totalCells}</span></b><small>angles covered</small></div>
-        <div className="stat"><b>{questions.filter((q) => (q.stability || 0) >= 21).length}</b><small>held durably</small></div>
-        <div className="stat"><b>{rows.filter((r) => r.covered <= 2).length}</b><small>thin concepts</small></div>
+        <div className="stat"><b>{filledShown}<span style={{ fontSize: 13, color: "var(--soft)" }}>/{totalCells}</span></b><small>angles covered</small></div>
+        <div className="stat"><b>{durableShown}</b><small>held durably</small></div>
+        <div className="stat"><b>{thinShown}</b><small>thin concepts</small></div>
       </div>
 
       <div className="card">
         <span className="eyebrow">Weakest concepts first · tap an empty cell to write that question</span>
-        {rows.map(({ c, qs, byAngle, covered, stab }) => (
+        {rows.map(({ c, qs, byAngle, covered, stab }, ri) => (
           <div className="cov" key={c.id}>
             <div className="cov-name">
               {c.name}
               <small>{qs.length} question{qs.length === 1 ? "" : "s"} · {covered}/6 angles{stab >= 21 ? " · durable" : stab >= 7 ? " · settling" : ""}</small>
             </div>
             <div className="cells">
-              {ANGLES.map((a) => {
+              {ANGLES.map((a, ci) => {
                 const list = byAngle[a.id] || [];
                 const avg = list.length ? list.reduce((s, q) => s + (q.stability || 0), 0) / list.length : 0;
                 const cls = !list.length ? "cell" : avg >= 21 ? "cell strong" : "cell has";
                 return (
                   <button key={a.id} className={cls}
+                    style={{ animationDelay: (140 + ri * 32 + ci * 26) + "ms" }}
                     title={a.name + (list.length ? " · " + list.length + " question(s)" : " · not asked yet")}
                     aria-label={c.name + ", " + a.name + ", " + (list.length ? list.length + " questions" : "empty")}
                     onClick={() => !list.length && onGap({ conceptId: c.id, angle: a.id, text: "" })}>{a.short}</button>
@@ -2406,7 +3190,7 @@ function CoverageView({ ctx, onGap }) {
 
 /* =============================== BANK ================================== */
 function BankView({ ctx, goAdd, onEdit, seed }) {
-  const { questions, concepts, languages, vecs, mlReady, putQ, dropQ, putVec } = ctx;
+  const { questions, concepts, languages, vecs, mlReady, putQ, dropQ } = ctx;
   const [q, setQ] = useState("");
   const [qVec, setQVec] = useState(null);
   const [conceptFilter, setConceptFilter] = useState("all");
@@ -2529,11 +3313,171 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
       {notesEditorItem && (
         <AnswerEditorModal
           title="What a strong answer covers"
-          value={notesEditorItem.answer || ""}
-          onSave={async (v) => { await putQ({ ...notesEditorItem, answer: v.trim() }); setEditing(null); }}
+          /* hand over whatever is in the inline box, not the last saved copy,
+             so opening the big editor never silently drops what you typed */
+          value={editing === notesEditorItem.id ? draft : (notesEditorItem.answer || "")}
+          onSave={async (v) => { setDraft(v); await putQ({ ...notesEditorItem, answer: v.trim() }); setEditing(null); }}
           onClose={() => setNotesEditorItem(null)}
         />
       )}
+    </>
+  );
+}
+
+
+/* ============================== STATS ================================== */
+/* Every number here is recomputed from the reviews table. The point of the
+   page is the retention chart: it is the only honest check on whether the
+   scheduler is calibrated to you rather than to its default weights. */
+function StatsView({ ctx }) {
+  const { reviews, questions, concepts, languages, settings, counts, streak, xp, level, todayCount } = ctx;
+
+  const ret = useMemo(() => retentionStats(reviews), [reviews]);
+  const wd = useMemo(() => weekdayStats(reviews), [reviews]);
+  const badges = useMemo(() => badgesOf({ reviews, questions, concepts, languages, streak, level }),
+    [reviews, questions, concepts, languages, streak, level]);
+
+  /* 17 weeks back to the start of that week, so columns line up as weeks */
+  const weeks = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const start = shiftDay(today, -(16 * 7 + today.getDay()));
+    const cols = [];
+    for (let w = 0; w < 17; w++) {
+      const col = [];
+      for (let d = 0; d < 7; d++) {
+        const day = shiftDay(start, w * 7 + d);
+        if (day > today) { col.push(null); continue; }
+        const k = dayKey(day.getTime());
+        col.push({ k, n: counts.get(k) || 0, today: k === dayKey(now()), month: day.getDate() <= 7 ? day.toLocaleString(undefined, { month: "short" }) : null });
+      }
+      cols.push(col);
+    }
+    return cols;
+  }, [counts]);
+
+  const xpShown = useCountUp(xp, 900);
+  const totalShown = useCountUp(reviews.length, 900);
+  const bestDay = useMemo(() => {
+    let best = 0; counts.forEach((n) => { if (n > best) best = n; }); return best;
+  }, [counts]);
+
+  const heatLevel = (n) => (n === 0 ? "" : n < 5 ? " l1" : n < 12 ? " l2" : n < 25 ? " l3" : " l4");
+  const pct = (x) => (x == null ? "—" : Math.round(x * 100) + "%");
+  const target = settings.retention || 0.9;
+
+  if (!reviews.length) {
+    return <div className="card"><div className="empty">
+      <h3>No history yet.</h3>
+      <p>Grade a few cards and this fills with your retention curve, a heatmap of the last four months, and which days of the week actually go well.</p>
+    </div></div>;
+  }
+
+  return (
+    <>
+      <div className="stat-row">
+        <div className="stat"><b>{streak.current}</b><small>day streak</small></div>
+        <div className="stat"><b>{totalShown}</b><small>reviews</small></div>
+        <div className="stat"><b>{xpShown}</b><small>total xp</small></div>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">True retention · target {Math.round(target * 100)}%</span>
+        <div className="ring-row">
+          <div>
+            <div className="gauge-num" style={{
+              color: ret.rate == null ? "var(--soft)"
+                : ret.rate >= target - 0.03 ? "var(--clear)"
+                : ret.rate >= target - 0.10 ? "var(--warn)" : "var(--collide)",
+            }}>{ret.rate == null ? "—" : Math.round(ret.rate * 100)}<span>%</span></div>
+          </div>
+          <p className="note" style={{ marginTop: 0, flex: 1 }}>
+            {ret.rate == null ? "Not enough spaced reviews yet."
+              : ret.rate >= target - 0.03
+                ? "You are recalling about as often as you asked to. The scheduler is calibrated."
+                : ret.rate < target - 0.10
+                  ? "You are forgetting more than you asked for. Raise target retention in Settings — the intervals are too long for you."
+                  : "Slightly below target. Give it a few weeks before changing anything."}
+          </p>
+        </div>
+        <p className="hint">Measured over {ret.n} reviews that were genuinely due. Same-day relearns are excluded — they test nothing about memory.</p>
+
+        <span className="eyebrow" style={{ marginTop: 18 }}>Recall by how long it had been</span>
+        <div className="chart">
+          {ret.buckets.map((b, i) => (
+            <div className="chart-col" key={b.label}>
+              <span className="chart-val">{b.n ? pct(b.rate) : "–"}</span>
+              <div className={"chart-bar" + (b.rate != null && b.rate < target - 0.05 ? " under" : "")}
+                style={{ height: Math.max(3, (b.rate || 0) * 100) + "%", animationDelay: (i * 80) + "ms" }} />
+            </div>
+          ))}
+        </div>
+        <div className="target-line" style={{ marginTop: -Math.round(target * 104) + "px" }}><b>target</b></div>
+        <div className="chart" style={{ height: "auto", marginTop: Math.round(target * 104) + "px" }}>
+          {ret.buckets.map((b) => <div className="chart-col" key={b.label}><span className="chart-key">{b.label}<br />{b.n}</span></div>)}
+        </div>
+        <p className="hint">A bar well under the dashed line means those intervals are too long. If the long buckets sag, your stability estimates are optimistic.</p>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Last 17 weeks · best day {bestDay}</span>
+        <div className="heat">
+          {weeks.map((col, i) => (
+            <div className="heat-col" key={i}>
+              {col.map((d, j) => (
+                <div key={j} className={"heat-cell" + (d ? heatLevel(d.n) + (d.today ? " today" : "") : "")}
+                  style={{ visibility: d ? "visible" : "hidden" }}
+                  title={d ? d.k + " · " + d.n + " review" + (d.n === 1 ? "" : "s") : ""} />
+              ))}
+            </div>
+          ))}
+        </div>
+        <p className="hint">
+          Longest run {streak.longest} day{streak.longest === 1 ? "" : "s"}
+          {streak.freezesLeft > 0 ? " · " + streak.freezesLeft + " rest day" + (streak.freezesLeft === 1 ? "" : "s") + " banked" : ""}
+          {" · "}{todayCount} today.
+        </p>
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">How the week actually goes</span>
+        <div className="chart">
+          {wd.map((d, i) => (
+            <div className="chart-col" key={d.label}>
+              <span className="chart-val">{d.n ? pct(d.rate) : "–"}</span>
+              <div className={"chart-bar" + (d.rate != null && d.rate < target - 0.05 ? " under" : "")}
+                style={{ height: Math.max(3, (d.rate || 0) * 100) + "%", animationDelay: (i * 60) + "ms" }} />
+            </div>
+          ))}
+        </div>
+        <div className="chart" style={{ height: "auto" }}>
+          {wd.map((d) => <div className="chart-col" key={d.label}><span className="chart-key">{d.label[0]}<br />{d.n}</span></div>)}
+        </div>
+        {(() => {
+          const rated = wd.filter((d) => d.n >= 5 && d.rate != null);
+          if (rated.length < 3) return <p className="hint">Needs a few more weeks before the day-of-week pattern means anything.</p>;
+          const worst = rated.slice().sort((a, b) => a.rate - b.rate)[0];
+          const best = rated.slice().sort((a, b) => b.rate - a.rate)[0];
+          if (best.rate - worst.rate < 0.08) return <p className="note">No real difference between days — your recall is steady whenever you sit down.</p>;
+          return <p className="note">
+            <b>{worst.label}</b> is your worst day at {pct(worst.rate)}, against {pct(best.rate)} on <b>{best.label}</b>.
+            {" "}Worth asking what is different — time of day, tiredness, or just cramming a backlog.
+          </p>;
+        })()}
+      </div>
+
+      <div className="card">
+        <span className="eyebrow">Achievements · {badges.filter((b) => b.got).length} of {badges.length}</span>
+        <div className="badges">
+          {badges.map((b, i) => (
+            <div className={"badge-tile" + (b.got ? " got" : "")} key={b.name} style={{ animationDelay: (i * 40) + "ms" }}>
+              <div className="ico">{b.icon}</div>
+              <b>{b.name}</b>
+              <small>{b.got ? b.note : b.have + " / " + b.need}</small>
+              {!b.got && <div className="prog"><i style={{ width: b.pct + "%" }} /></div>}
+            </div>
+          ))}
+        </div>
+      </div>
     </>
   );
 }
@@ -2547,8 +3491,19 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
   const [reviewCount, setReviewCount] = useState(null);
   const [stats, setStats] = useState(null);
   const [sqlBusy, setSqlBusy] = useState(false);
+  const [installable, setInstallable] = useState(typeof window !== "undefined" && !!window.__installPrompt);
+  const [installed, setInstalled] = useState(
+    typeof matchMedia === "function" && matchMedia("(display-mode: standalone)").matches);
   const fileRef = useRef(null);
   const dbRef = useRef(null);
+
+  useEffect(() => {
+    const on = () => setInstallable(true);
+    const off = () => { setInstallable(false); setInstalled(true); };
+    window.addEventListener("bank-installable", on);
+    window.addEventListener("bank-installed", off);
+    return () => { window.removeEventListener("bank-installable", on); window.removeEventListener("bank-installed", off); };
+  }, []);
 
   useEffect(() => {
     if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then((e) => setUsage(e)).catch(() => {});
@@ -2570,10 +3525,11 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
       const incoming = JSON.parse(text);
       if (incoming.format !== "thebank") throw new Error("not a Bank backup");
       const { data, report } = mergeImport({ questions, concepts, languages }, incoming);
-      await Repo.saveQuestions(data.questions);
       await Repo.saveConcepts(data.concepts);
       await Repo.saveLanguages(data.languages);
+      await Repo.saveQuestions(data.questions);
       setAll(data.questions, data.concepts, data.languages);
+      refreshStore();
       setMsg({ k: "ok", t: "Merged", b: report.added + " added, " + report.updated + " updated, " + report.skipped + " skipped as already here, " + report.newConcepts + " new concepts, " + report.newLanguages + " new languages. Nothing was deleted." });
     } catch (e) {
       setMsg({ k: "warn", t: "Couldn't read that file", b: (e && e.message) || "Pick a .json backup exported from The Bank." });
@@ -2586,6 +3542,45 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
   return (
     <>
       {msg && <div className={"alert " + (msg.k === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}><b>{msg.t}</b>{msg.b}</div>}
+
+      <div className="card">
+        <span className="eyebrow">Install on this device</span>
+        {installed ? (
+          <>
+            <div className="alert ok" style={{ marginTop: 0 }}>
+              <b>Running as an installed app</b>
+              Full screen, its own icon, and it opens offline — the whole app is cached on this device.
+            </div>
+            <p className="hint">Your database lives in this install. Uninstalling clears it, so export a backup first.</p>
+          </>
+        ) : installable ? (
+          <>
+            <p className="note" style={{ marginTop: 0 }}>
+              Add it to your home screen and it opens full screen with no browser bar, starts instantly,
+              and works with no signal. Same data, same database file.
+            </p>
+            <button className="btn violet" style={{ marginTop: 12 }} onClick={async () => {
+              const p = window.__installPrompt;
+              if (!p) return setMsg({ k: "warn", t: "Not available", b: "Use your browser menu — Chrome calls it Add to Home screen." });
+              p.prompt();
+              const res = await p.userChoice.catch(() => null);
+              window.__installPrompt = null;
+              setInstallable(false);
+              if (res && res.outcome === "accepted") setMsg({ k: "ok", t: "Installing", b: "Look for The Bank on your home screen and in your app drawer." });
+            }}>Install The Bank</button>
+            <p className="hint">Long-press the icon afterwards for shortcuts straight into Review, Add or Stats.</p>
+          </>
+        ) : (
+          <>
+            <p className="note" style={{ marginTop: 0 }}>
+              On Android, open your browser menu and choose <b>Add to Home screen</b> — it installs as a real app
+              with its own icon, no browser bar, and full offline support.
+              On iPhone it is the Share button, then <b>Add to Home Screen</b>.
+            </p>
+            <p className="hint">On iOS this also stops Safari clearing your database after a week away.</p>
+          </>
+        )}
+      </div>
 
       <div className="card">
         <span className="eyebrow">Semantic matching</span>
@@ -2635,6 +3630,15 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
           </select>
         </div>
         <div className="field">
+          <label className="hint" style={{ marginTop: 0 }} htmlFor="goal">Daily goal — what counts as a day done</label>
+          <select id="goal" className="t" value={String(settings.dailyGoal)} onChange={(e) => putSettings({ dailyGoal: parseInt(e.target.value, 10) })}>
+            <option value="5">5 cards — keep the streak cheap</option>
+            <option value="10">10 cards — the default</option>
+            <option value="20">20 cards — serious run-up</option>
+            <option value="40">40 cards — interview week</option>
+          </select>
+        </div>
+        <div className="field">
           <label className="hint" style={{ marginTop: 0 }} htmlFor="tt">Spoken answer target</label>
           <select id="tt" className="t" value={String(settings.talkTarget)} onChange={(e) => putSettings({ talkTarget: parseInt(e.target.value, 10) })}>
             <option value="60">60 seconds — screening round</option>
@@ -2649,12 +3653,12 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
         <span className="eyebrow">Where your data lives</span>
         {store && store.backend === "sqlite" ? (
           <>
-            <div className="kv"><span>Engine</span><b>SQLite (WASM) · schema v1</b></div>
+            <div className="kv"><span>Engine</span><b>SQLite (WASM) · schema v{SCHEMA_VERSION}</b></div>
             <div className="kv"><span>File</span><b>OPFS / {store.file}</b></div>
             <div className="kv"><span>File size</span><b>{kb(store.bytes)}{store.dirty ? " · unsaved changes" : ""}</b></div>
             <div className="kv"><span>Eviction protection</span><b style={{ color: store.persisted ? "var(--clear)" : "var(--warn)" }}>{store.persisted ? "granted" : "not granted"}</b></div>
-            <div className="kv"><span>Tables</span><b>questions · concepts · vectors · reviews · meta</b></div>
-            <div className="kv"><span>Rows</span><b>{questions.length} q · {concepts.length} c · {vecs.size} vec · {reviewCount === null ? "…" : reviewCount} rev</b></div>
+            <div className="kv"><span>Tables</span><b>questions · concepts · languages · vectors · reviews · meta</b></div>
+            <div className="kv"><span>Rows</span><b>{questions.length} q · {concepts.length} c · {languages.length} lang · {vecs.size} vec · {reviewCount === null ? "…" : reviewCount} rev</b></div>
             {usage && <div className="kv"><span>Origin usage</span><b>{mb(usage.usage || 0)} of {mb(usage.quota || 0)}</b></div>}
             <p className="note">
               A real SQLite database, held in memory and committed to one file after every change.
@@ -2725,7 +3729,7 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
       <div className="card">
         <span className="eyebrow">Backup and transfer</span>
         <p className="note" style={{ marginTop: 0 }}>
-          One JSON file with every question, concept, and review. Vectors are excluded — they're derived data
+          One JSON file with every question, concept, language, and review. Vectors are excluded — they're derived data
           that rebuilds in seconds, and including them would triple the file.
         </p>
         <div className="row" style={{ marginTop: 12 }}>
