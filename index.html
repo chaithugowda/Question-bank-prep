@@ -161,6 +161,15 @@ const CSS = `
   font-weight:500; padding:9px 2px; border-radius:8px;}
 .tabs button.on{background:linear-gradient(135deg,var(--solid),var(--solid2)); color:var(--on-solid);}
 .tabs .badge{font-family:var(--mono); font-size:10px; margin-left:4px; opacity:.75;}
+
+.mode-toggle{display:flex; gap:3px; background:var(--card); border:1px solid var(--rule);
+  border-radius:11px; padding:4px; margin-bottom:14px; box-shadow:0 1px 2px var(--shadow-sm);}
+.mode-toggle button{flex:1; border:0; background:transparent; color:var(--soft); font-size:12.5px;
+  font-weight:500; padding:9px 10px; border-radius:8px;}
+.mode-toggle button.on{background:linear-gradient(135deg,var(--solid),var(--solid2)); color:var(--on-solid);}
+
+.rev-flip{transition:transform .16s ease, opacity .16s ease; transform-origin:center;}
+.rev-flip.flip{transform:scaleX(.94); opacity:.5;}
 @media (min-width:900px){
   .sidebar .tabs{flex-direction:column; background:transparent; border:0; padding:0;
     box-shadow:none; gap:2px; margin:4px 0 0;}
@@ -180,7 +189,23 @@ input.t{font-family:var(--grotesk); font-size:14.5px;}
 textarea.q{min-height:88px; line-height:1.45;}
 textarea.q:focus, input.t:focus{background:var(--card); border-color:var(--indigo);}
 textarea.q::placeholder, input.t::placeholder{color:var(--placeholder);}
-textarea.sm{min-height:66px; font-size:15px;}
+textarea.sm{min-height:110px; font-size:15px;}
+textarea.xl{min-height:320px; font-size:16.5px;}
+textarea.mono{font-family:var(--mono); font-size:13.5px; line-height:1.55; white-space:pre;}
+.code-block{margin-top:10px; padding:12px 14px; background:var(--surface2); border:1px solid var(--rule);
+  border-radius:10px; font-family:var(--mono); font-size:12.5px; line-height:1.6; color:var(--ink);
+  white-space:pre; overflow-x:auto;}
+
+.expand-btn{display:inline-flex; align-items:center; gap:5px; border:0; background:transparent;
+  color:var(--soft); font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  padding:0; margin-top:7px;}
+.expand-btn:hover{color:var(--indigo);}
+
+.modal-backdrop{position:fixed; inset:0; background:rgba(8,10,16,.5); display:flex;
+  align-items:center; justify-content:center; padding:20px; z-index:80;}
+.modal-panel{background:var(--card); border:1px solid var(--rule); border-radius:16px; padding:22px;
+  width:100%; max-width:640px; max-height:86vh; overflow:auto; box-shadow:0 24px 64px -20px rgba(0,0,0,.5);}
+.modal-head{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px;}
 select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:11px 12px;
   font-size:14px; background:var(--surface2); font-family:var(--grotesk); color:var(--ink);}
 
@@ -562,12 +587,16 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS concepts (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS languages (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]'
+);
 CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY,
   text TEXT NOT NULL,
   answer TEXT,
+  code_example TEXT,
   concept_id TEXT REFERENCES concepts(id) ON DELETE SET NULL,
-  language TEXT,
+  language_id TEXT REFERENCES languages(id) ON DELETE SET NULL,
   angle TEXT DEFAULT 'def',
   difficulty TEXT DEFAULT 'medium',
   due INTEGER, created INTEGER, last INTEGER,
@@ -577,6 +606,7 @@ CREATE TABLE IF NOT EXISTS questions (
 );
 CREATE INDEX IF NOT EXISTS idx_q_due ON questions(due);
 CREATE INDEX IF NOT EXISTS idx_q_concept ON questions(concept_id);
+CREATE INDEX IF NOT EXISTS idx_q_language ON questions(language_id);
 CREATE INDEX IF NOT EXISTS idx_q_variant ON questions(variant_of);
 CREATE TABLE IF NOT EXISTS vectors (
   id TEXT PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
@@ -596,9 +626,21 @@ const DB_FILE = "bank.sqlite3";
 const LEGACY_KEY = "qbank:v1";
 const IDB_NAME = "qbank";
 
+/* `CREATE TABLE IF NOT EXISTS` never touches a table that already exists on
+   disk, so a database saved before the languages feature shipped needs an
+   explicit ALTER TABLE to grow the new column. Safe to call every boot. */
+function ensureLanguageColumn(db) {
+  const info = db.exec("PRAGMA table_info(questions)");
+  const names = info.length ? info[0].values.map((r) => r[1]) : [];
+  if (!names.includes("language_id")) db.run("ALTER TABLE questions ADD COLUMN language_id TEXT");
+  if (!names.includes("code_example")) db.run("ALTER TABLE questions ADD COLUMN code_example TEXT");
+}
+
 /* ---- row mapping: snake_case on disk, camelCase in the app ---- */
 const rowToQ = (r) => ({
-  id: r.id, text: r.text, answer: r.answer || "", conceptId: r.concept_id || null, language: r.language || "",
+  id: r.id, text: r.text, answer: r.answer || "", codeExample: r.code_example || "",
+  conceptId: r.concept_id || null,
+  languageId: r.language_id || null,
   angle: r.angle || "def", difficulty: r.difficulty || "medium",
   due: r.due, created: r.created, last: r.last,
   reps: r.reps || 0, lapses: r.lapses || 0,
@@ -606,7 +648,7 @@ const rowToQ = (r) => ({
   variantOf: r.variant_of || null,
 });
 const qToRow = (q) => [
-  q.id, q.text, q.answer || "", q.conceptId || null, q.language || "", q.angle || "def", q.difficulty || "medium",
+  q.id, q.text, q.answer || "", q.codeExample || "", q.conceptId || null, q.languageId || null, q.angle || "def", q.difficulty || "medium",
   q.due || null, q.created || null, q.last || null,
   q.reps || 0, q.lapses || 0,
   q.stability == null ? null : q.stability,
@@ -614,8 +656,8 @@ const qToRow = (q) => [
   q.interval == null ? null : q.interval,
   q.variantOf || null,
 ];
-const Q_COLS = "id,text,answer,concept_id,language,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of";
-const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+const Q_COLS = "id,text,answer,code_example,concept_id,language_id,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of";
+const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 /* ====================== fallback backend: IndexedDB ==================== */
 let _idb = null;
@@ -623,14 +665,20 @@ function openIDB() {
   if (_idb) return Promise.resolve(_idb);
   return new Promise((resolve, reject) => {
     if (!window.indexedDB) return reject(new Error("IndexedDB unavailable"));
-    const req = indexedDB.open(IDB_NAME, 1);
+    const req = indexedDB.open(IDB_NAME, 2);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
+      const tx = e.target.transaction;
+      let qStore;
       if (!db.objectStoreNames.contains("questions")) {
-        const s = db.createObjectStore("questions", { keyPath: "id" });
-        s.createIndex("due", "due"); s.createIndex("conceptId", "conceptId");
+        qStore = db.createObjectStore("questions", { keyPath: "id" });
+        qStore.createIndex("due", "due"); qStore.createIndex("conceptId", "conceptId");
+      } else {
+        qStore = tx.objectStore("questions");
       }
+      if (!qStore.indexNames.contains("languageId")) qStore.createIndex("languageId", "languageId");
       if (!db.objectStoreNames.contains("concepts")) db.createObjectStore("concepts", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("languages")) db.createObjectStore("languages", { keyPath: "id" });
       if (!db.objectStoreNames.contains("vectors")) db.createObjectStore("vectors", { keyPath: "id" });
       if (!db.objectStoreNames.contains("reviews")) db.createObjectStore("reviews", { keyPath: "rid", autoIncrement: true });
       if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "k" });
@@ -688,8 +736,7 @@ const Storage = {
       const buf = new Uint8Array(await file.arrayBuffer());
       this.db = buf.byteLength ? new SQL.Database(buf) : new SQL.Database();
       this.db.run(SCHEMA);
-      /* Additive migration: preserve all existing questions while adding language tags. */
-      try { this.db.run("ALTER TABLE questions ADD COLUMN language TEXT"); } catch (e) {}
+      ensureLanguageColumn(this.db);
       this.db.run("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)", [String(SCHEMA_VERSION)]);
       this.bytes = buf.byteLength;
       this.backend = "sqlite";
@@ -759,8 +806,7 @@ const Storage = {
     const found = t.length ? t[0].values[0][0] : 0;
     if (found < 2) { probe.close(); throw new Error("that file is not a Bank database"); }
     probe.run(SCHEMA);
-    /* Additive migration for older imported Bank databases. */
-    try { probe.run("ALTER TABLE questions ADD COLUMN language TEXT"); } catch (e) {}
+    ensureLanguageColumn(probe);
     if (this.db) this.db.close();
     this.db = probe;
     this.dirty = true;
@@ -807,14 +853,19 @@ const Repo = {
         try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
         return { id: r.id, name: r.name, aliases };
       });
+      const languages = Storage.all("SELECT id,name,aliases FROM languages").map((r) => {
+        let aliases = [];
+        try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
+        return { id: r.id, name: r.name, aliases };
+      });
       const m = Storage.all("SELECT v FROM meta WHERE k='settings'");
       let settings = {};
       if (m.length) { try { settings = JSON.parse(m[0].v); } catch (e) {} }
-      return { questions, concepts, settings };
+      return { questions, concepts, languages, settings };
     }
-    const [questions, concepts, meta] = await Promise.all([IDB.all("questions"), IDB.all("concepts"), IDB.all("meta")]);
+    const [questions, concepts, languages, meta] = await Promise.all([IDB.all("questions"), IDB.all("concepts"), IDB.all("languages"), IDB.all("meta")]);
     const s = meta.find((x) => x.k === "settings");
-    return { questions, concepts, settings: (s && s.v) || {} };
+    return { questions, concepts, languages, settings: (s && s.v) || {} };
   },
 
   async saveQuestion(q) {
@@ -859,6 +910,19 @@ const Repo = {
   async removeConcept(id) {
     if (Storage.backend === "sqlite") { Storage.run("DELETE FROM concepts WHERE id=?", [id]); return; }
     return IDB.del("concepts", id);
+  },
+  async saveLanguage(l) {
+    if (Storage.backend === "sqlite") {
+      Storage.run("INSERT OR REPLACE INTO languages(id,name,aliases) VALUES (?,?,?)",
+        [l.id, l.name, JSON.stringify(l.aliases || [])]);
+      return;
+    }
+    return IDB.put("languages", l);
+  },
+  async saveLanguages(ls) { for (const l of ls) await this.saveLanguage(l); },
+  async removeLanguage(id) {
+    if (Storage.backend === "sqlite") { Storage.run("DELETE FROM languages WHERE id=?", [id]); return; }
+    return IDB.del("languages", id);
   },
   async saveSettings(v) {
     if (Storage.backend === "sqlite") {
@@ -933,14 +997,14 @@ const Repo = {
 
   async wipe() {
     if (Storage.backend === "sqlite") {
-      ["reviews", "vectors", "questions", "concepts", "meta"].forEach((t) => Storage.db.run("DELETE FROM " + t));
+      ["reviews", "vectors", "questions", "concepts", "languages", "meta"].forEach((t) => Storage.db.run("DELETE FROM " + t));
       /* DELETE only frees pages inside the file; VACUUM actually shrinks it */
       Storage.db.run("VACUUM");
     }
     /* Clear the migration sources too, or they repopulate on the next refresh. */
     let cleared = { idb: false, legacy: false };
     try {
-      await Promise.all(["questions", "concepts", "vectors", "reviews", "meta"].map((n) => IDB.clear(n)));
+      await Promise.all(["questions", "concepts", "languages", "vectors", "reviews", "meta"].map((n) => IDB.clear(n)));
       cleared.idb = true;
     } catch (e) {}
     try { localStorage.removeItem(LEGACY_KEY); cleared.legacy = true; } catch (e) {}
@@ -956,14 +1020,16 @@ const Repo = {
     if (MIG.read("idb")) return 0;
     const have = Storage.all("SELECT count(*) c FROM questions");
     if (have[0].c > 0) { MIG.write("idb"); return 0; }
-    let qs = [], cs = [], vs = [], rs = [];
+    let qs = [], cs = [], ls = [], vs = [], rs = [];
     try {
       qs = await IDB.all("questions"); cs = await IDB.all("concepts");
+      ls = await IDB.all("languages").catch(() => []);
       vs = await IDB.all("vectors"); rs = await IDB.all("reviews");
     } catch (e) { return 0; }   /* could not read: do not mark, try again later */
     MIG.write("idb");
-    if (!qs.length && !cs.length) return 0;
+    if (!qs.length && !cs.length && !ls.length) return 0;
     await this.saveConcepts(cs);
+    await this.saveLanguages(ls);
     await this.saveQuestions(qs);
     for (const v of vs) if (v.v) await this.putVector(v.id, v.v);
     for (const r of rs) await this.logReview(r);
@@ -987,6 +1053,7 @@ const Repo = {
         difficultyF: 5, interval: null,
       }));
       await this.saveConcepts(old.concepts || []);
+      await this.saveLanguages(old.languages || []);
       await this.saveQuestions(qs);
       if (Storage.backend === "sqlite") await Storage.flush();
       MIG.write("legacy");
@@ -1002,8 +1069,8 @@ function buildExport(data, reviews) {
   return JSON.stringify({
     format: "thebank", version: EXPORT_VERSION,
     exportedAt: new Date().toISOString(),
-    counts: { questions: data.questions.length, concepts: data.concepts.length, reviews: reviews.length },
-    settings: data.settings, concepts: data.concepts, questions: data.questions, reviews,
+    counts: { questions: data.questions.length, concepts: data.concepts.length, languages: (data.languages || []).length, reviews: reviews.length },
+    settings: data.settings, concepts: data.concepts, languages: data.languages || [], questions: data.questions, reviews,
   }, null, 2);
 }
 const stamp = () => new Date().toISOString().slice(0, 10);
@@ -1033,8 +1100,11 @@ function mergeImport(current, incoming) {
   const qById = new Map(current.questions.map((q) => [q.id, q]));
   const cById = new Map(current.concepts.map((c) => [c.id, c]));
   const cByName = new Map(current.concepts.map((c) => [cnorm(c.name), c]));
-  let added = 0, updated = 0, skipped = 0, newConcepts = 0;
+  const lById = new Map((current.languages || []).map((l) => [l.id, l]));
+  const lByName = new Map((current.languages || []).map((l) => [cnorm(l.name), l]));
+  let added = 0, updated = 0, skipped = 0, newConcepts = 0, newLanguages = 0;
   const remap = new Map();
+  const remapLang = new Map();
 
   (incoming.concepts || []).forEach((c) => {
     const sameName = cByName.get(cnorm(c.name));
@@ -1042,8 +1112,18 @@ function mergeImport(current, incoming) {
     if (sameName) { remap.set(c.id, sameName.id); return; }
     cById.set(c.id, c); cByName.set(cnorm(c.name), c); remap.set(c.id, c.id); newConcepts++;
   });
+  (incoming.languages || []).forEach((l) => {
+    const sameName = lByName.get(cnorm(l.name));
+    if (lById.has(l.id)) { remapLang.set(l.id, l.id); return; }
+    if (sameName) { remapLang.set(l.id, sameName.id); return; }
+    lById.set(l.id, l); lByName.set(cnorm(l.name), l); remapLang.set(l.id, l.id); newLanguages++;
+  });
   (incoming.questions || []).forEach((q) => {
-    const mapped = { ...q, conceptId: q.conceptId ? (remap.get(q.conceptId) || q.conceptId) : null };
+    const mapped = {
+      ...q,
+      conceptId: q.conceptId ? (remap.get(q.conceptId) || q.conceptId) : null,
+      languageId: q.languageId ? (remapLang.get(q.languageId) || q.languageId) : null,
+    };
     const mine = qById.get(q.id);
     if (!mine) {
       const clash = [...qById.values()].find((x) => lexScore(x.text, mapped.text) >= 92);
@@ -1054,8 +1134,8 @@ function mergeImport(current, incoming) {
     } else skipped++;
   });
   return {
-    data: { questions: [...qById.values()], concepts: [...cById.values()] },
-    report: { added, updated, skipped, newConcepts },
+    data: { questions: [...qById.values()], concepts: [...cById.values()], languages: [...lById.values()] },
+    report: { added, updated, skipped, newConcepts, newLanguages },
   };
 }
 
@@ -1115,7 +1195,7 @@ const STARTER = () => {
   return {
     concepts: cs,
     questions: raw.map(([text, concept, angle, answer], i) => ({
-      id: uid(), text, conceptId: byName(concept), language: concept === "SQL" ? "SQL" : concept === "JavaScript" ? "JavaScript" : concept === "React" ? "React" : "", angle, answer,
+      id: uid(), text, conceptId: byName(concept), angle, answer,
       difficulty: i % 3 === 0 ? "hard" : "medium",
       due: t, created: t - i * 1000, last: null,
       reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null, variantOf: null,
@@ -1130,6 +1210,7 @@ function QuestionBank() {
   const [boot, setBoot] = useState("loading");
   const [questions, setQuestions] = useState([]);
   const [concepts, setConcepts] = useState([]);
+  const [languages, setLanguages] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [vecs, setVecs] = useState(new Map());
   const [mlState, setMlState] = useState({ state: "off", progress: 0, error: null });
@@ -1155,6 +1236,7 @@ function QuestionBank() {
         const v = await Repo.allVectors();
         setQuestions(d.questions);
         setConcepts(d.concepts);
+        setLanguages(d.languages || []);
         setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
         setVecs(v);
         setStore(Storage.info());
@@ -1188,6 +1270,10 @@ function QuestionBank() {
   const putC = useCallback(async (c) => {
     setConcepts((prev) => { const i = prev.findIndex((x) => x.id === c.id); if (i < 0) return [...prev, c]; const n = [...prev]; n[i] = c; return n; });
     try { await Repo.saveConcept(c); } catch (e) {}
+  }, []);
+  const putL = useCallback(async (l) => {
+    setLanguages((prev) => { const i = prev.findIndex((x) => x.id === l.id); if (i < 0) return [...prev, l]; const n = [...prev]; n[i] = l; return n; });
+    try { await Repo.saveLanguage(l); } catch (e) {}
   }, []);
   const putSettings = useCallback(async (patch) => {
     setSettings((prev) => { const next = { ...prev, ...patch }; Repo.saveSettings(next).catch(() => {}); return next; });
@@ -1227,7 +1313,7 @@ function QuestionBank() {
   }
 
   const dueCount = questions.filter((q) => !q.variantOf && isDue(q)).length;
-  const ctx = { questions, concepts, settings, vecs, mlReady, putQ, dropQ, putC, putVec, putSettings, store, refreshStore: () => setStore(Storage.info()) };
+  const ctx = { questions, concepts, languages, settings, vecs, mlReady, putQ, dropQ, putC, putL, putVec, putSettings, store, refreshStore: () => setStore(Storage.info()) };
 
   return (
     <div className="qb" data-theme={settings.theme || "light"}>
@@ -1302,8 +1388,34 @@ function QuestionBank() {
         }} />}
         {tab === "data" && <DataView ctx={ctx} mlState={mlState} backfill={backfill} store={store}
           enableML={() => { putSettings({ mlEnabled: true }); enableML(); }}
-          setAll={(q, c) => { setQuestions(q); setConcepts(c); }} />}
+          setAll={(q, c, l) => { setQuestions(q); setConcepts(c); if (l) setLanguages(l); }} />}
         </main>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ ANSWER EDITOR ============================= */
+function AnswerEditorModal({ title, value, onSave, onClose, mono, placeholder, hint, saveLabel }) {
+  const [draft, setDraft] = useState(value || "");
+  const n = splitBeats(draft).length;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="eyebrow" style={{ margin: 0 }}>{title}</span>
+          <button className="btn tiny line" onClick={onClose}>Close</button>
+        </div>
+        <textarea
+          className={"q xl" + (mono ? " mono" : "")} autoFocus value={draft} spellCheck={!mono}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={placeholder || "One beat per line.\nReview checks your spoken answer against each one."}
+        />
+        <p className="hint">{hint || (n + " beat" + (n === 1 ? "" : "s") + " detected. Review scores your spoken answer against each one individually.")}</p>
+        <div className="row" style={{ marginTop: 14 }}>
+          <button className="btn" onClick={() => { onSave(draft); onClose(); }}>{saveLabel || "Save answer"}</button>
+          <button className="btn line" onClick={onClose}>Cancel</button>
+        </div>
       </div>
     </div>
   );
@@ -1311,12 +1423,15 @@ function QuestionBank() {
 
 /* ================================ ADD ================================== */
 function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
-  const { questions, concepts, vecs, mlReady, putQ, putC, putVec } = ctx;
+  const { questions, concepts, languages, vecs, mlReady, putQ, putC, putL, putVec } = ctx;
   const [text, setText] = useState("");
   const [answer, setAnswer] = useState("");
+  const [codeExample, setCodeExample] = useState("");
   const [conceptInput, setConceptInput] = useState("");
   const [conceptId, setConceptId] = useState(null);
-  const [language, setLanguage] = useState("");
+  const [languageInput, setLanguageInput] = useState("");
+  const [languageId, setLanguageId] = useState(null);
+  const [touchedLanguage, setTouchedLanguage] = useState(false);
   const [angle, setAngle] = useState(null);
   const [angleAuto, setAngleAuto] = useState(null);
   const [difficulty, setDifficulty] = useState("medium");
@@ -1327,14 +1442,16 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
   const [thinking, setThinking] = useState(false);
   const [touchedConcept, setTouchedConcept] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [answerEditorOpen, setAnswerEditorOpen] = useState(false);
+  const [codeEditorOpen, setCodeEditorOpen] = useState(false);
 
   const conceptOf = (id) => concepts.find((c) => c.id === id);
+  const languageOf = (id) => languages.find((l) => l.id === id);
 
   useEffect(() => {
     if (!prefill) return;
     setText(prefill.text || "");
     setConceptId(prefill.conceptId || null);
-    setLanguage(prefill.language || "");
     setTouchedConcept(true);
     if (prefill.angle) { setAngle(prefill.angle); }
     setConceptInput("");
@@ -1349,20 +1466,23 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     setEditingId(editItem.id);
     setText(editItem.text || "");
     setAnswer(editItem.answer || "");
+    setCodeExample(editItem.codeExample || "");
     setConceptId(editItem.conceptId || null);
-    setLanguage(editItem.language || "");
+    setLanguageId(editItem.languageId || null);
     setAngle(editItem.angle || null);
     setDifficulty(editItem.difficulty || "medium");
     setConceptInput("");
+    setLanguageInput("");
     setTouchedConcept(true);
+    setTouchedLanguage(true);
     setOverride(false);
     setFlash(null);
   }, [editItem]);
 
   function cancelEdit() {
     setEditingId(null);
-    setText(""); setAnswer(""); setConceptId(null); setLanguage(""); setAngle(null); setDifficulty("medium");
-    setConceptInput(""); setTouchedConcept(false); setOverride(false);
+    setText(""); setAnswer(""); setCodeExample(""); setConceptId(null); setLanguageId(null); setAngle(null); setDifficulty("medium");
+    setConceptInput(""); setLanguageInput(""); setTouchedConcept(false); setTouchedLanguage(false); setOverride(false);
     setDebounced(""); setLiveVec(null);
     clearEdit();
   }
@@ -1467,6 +1587,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
   }, [matches]);
 
   const resolution = useMemo(() => (conceptInput.trim() ? resolveConcept(conceptInput, concepts) : null), [conceptInput, concepts]);
+  const languageResolution = useMemo(() => (languageInput.trim() ? resolveConcept(languageInput, languages) : null), [languageInput, languages]);
 
   const gapAngles = useMemo(() => {
     if (!conceptId) return [];
@@ -1488,13 +1609,27 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     putC(c); pickConcept(c);
   }
 
+  function pickLanguage(l) { setLanguageId(l.id); setLanguageInput(""); setTouchedLanguage(true); }
+
+  function useAliasForLanguage(l) {
+    const typed = languageInput.trim();
+    putL({ ...l, aliases: [...(l.aliases || []), typed] });
+    pickLanguage(l);
+    setFlash({ kind: "ok", title: "Folded in", body: '"' + typed + '" now points at ' + l.name + '. Type it again any time.' });
+  }
+  function createLanguage() {
+    const name = languageInput.trim().replace(/\s+/g, " ");
+    const l = { id: uid(), name: name.charAt(0).toUpperCase() + name.slice(1), aliases: [] };
+    putL(l); pickLanguage(l);
+  }
+
   async function save(asVariant) {
     const clean = text.trim().replace(/\s+/g, " ");
 
     if (editingId) {
       const prev = questions.find((x) => x.id === editingId) || {};
       const textChanged = prev.text !== clean;
-      const q = { ...prev, text: clean, answer: answer.trim(), conceptId, language, angle: angle || "def", difficulty };
+      const q = { ...prev, text: clean, answer: answer.trim(), codeExample: codeExample.trim(), conceptId, languageId, angle: angle || "def", difficulty };
       await putQ(q);
       if (mlReady) {
         const v = textChanged ? (liveVec || (await ML.embed(clean))) : (liveVec || vecs.get(editingId));
@@ -1510,15 +1645,15 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
     }
 
     const q = {
-      id: uid(), text: clean, answer: answer.trim(), conceptId, language, angle: angle || "def", difficulty,
+      id: uid(), text: clean, answer: answer.trim(), codeExample: codeExample.trim(), conceptId, languageId, angle: angle || "def", difficulty,
       due: now(), created: now(), last: null,
       reps: 0, lapses: 0, stability: null, difficultyF: null, interval: null,
       variantOf: asVariant && top ? top.q.id : null,
     };
     await putQ(q);
     if (mlReady) { const v = liveVec || (await ML.embed(clean)); if (v) putVec(q.id, v); }
-    setText(""); setAnswer(""); setLanguage(""); setAngle(null); setOverride(false); setDebounced(""); setLiveVec(null);
-    setTouchedConcept(false);
+    setText(""); setAnswer(""); setCodeExample(""); setAngle(null); setOverride(false); setDebounced(""); setLiveVec(null);
+    setTouchedConcept(false); setTouchedLanguage(false);
     setFlash({
       kind: "ok",
       title: asVariant ? "Saved as a variant" : "Added to the bank",
@@ -1669,21 +1804,48 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
 
           <div className="card">
             <span className="eyebrow">Language</span>
-            <select className="t" value={language} onChange={(e) => setLanguage(e.target.value)}>
-              <option value="">Select a language…</option>
-              <option value="C#">C#</option>
-              <option value=".NET">.NET</option>
-              <option value="JavaScript">JavaScript</option>
-              <option value="TypeScript">TypeScript</option>
-              <option value="React">React</option>
-              <option value="SQL">SQL</option>
-              <option value="Python">Python</option>
-              <option value="Java">Java</option>
-              <option value="C++">C++</option>
-              <option value="Go">Go</option>
-              <option value="Rust">Rust</option>
-              <option value="Other">Other</option>
-            </select>
+            {languageId ? (
+              <div className="chips">
+                <button className="chip on" onClick={() => { setLanguageId(null); setTouchedLanguage(true); }}>
+                  {languageOf(languageId) ? languageOf(languageId).name : "?"}<span className="x">✕</span>
+                </button>
+              </div>
+            ) : (
+              <>
+                <input className="t" value={languageInput} onChange={(e) => { setLanguageInput(e.target.value); setTouchedLanguage(true); }} placeholder="Search or name a language…" />
+                {languageInput.trim() === "" && languages.length > 0 && (
+                  <div className="chips">
+                    {languages.slice(0, 10).map((l) => (
+                      <button key={l.id} className="chip" onClick={() => pickLanguage(l)}>{l.name}</button>
+                    ))}
+                  </div>
+                )}
+                {languageInput.trim() !== "" && (
+                  <div className="chips">
+                    {languages.filter((l) => cnorm(l.name).includes(cnorm(languageInput)) || (l.aliases || []).some((a) => cnorm(a).includes(cnorm(languageInput))))
+                      .slice(0, 6).map((l) => <button key={l.id} className="chip" onClick={() => pickLanguage(l)}>{l.name}</button>)}
+                  </div>
+                )}
+                {languageResolution && languageResolution.kind === "exact" && (
+                  <div className="alert ok"><b>{languageResolution.concept.name} already exists.</b>
+                    <button className="btn tiny line" style={{ marginTop: 8 }} onClick={() => pickLanguage(languageResolution.concept)}>Use it</button></div>
+                )}
+                {languageResolution && languageResolution.kind === "similar" && (
+                  <div className="alert warn">
+                    <b>Did you mean {languageResolution.concept.name}?</b>
+                    Two spellings of one language split your coverage in half.
+                    <div className="row" style={{ marginTop: 10 }}>
+                      <button className="btn tiny" onClick={() => useAliasForLanguage(languageResolution.concept)}>Use {languageResolution.concept.name}</button>
+                      <button className="btn tiny line" onClick={createLanguage}>Keep separate</button>
+                    </div>
+                  </div>
+                )}
+                {languageResolution && languageResolution.kind === "new" && (
+                  <button className="btn tiny line" style={{ marginTop: 10 }} onClick={createLanguage}>Create “{languageInput.trim()}”</button>
+                )}
+              </>
+            )}
+            <p className="hint">Optional. Useful when the same concept gets asked differently across languages — e.g. concurrency in Java vs. Go.</p>
           </div>
 
           <div className="card">
@@ -1725,8 +1887,39 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
                 ? splitBeats(answer).length + " beat" + (splitBeats(answer).length === 1 ? "" : "s") + " detected. Review will tell you which ones you skipped."
                 : "Write one beat per line. Review scores your spoken answer against them individually."}
             </p>
+            <button type="button" className="expand-btn" onClick={() => setAnswerEditorOpen(true)}>⤢ Open full editor</button>
+          </div>
+
+          <div className="card">
+            <span className="eyebrow">Code example / reference (optional)</span>
+            <textarea className="q sm mono" value={codeExample} onChange={(e) => setCodeExample(e.target.value)}
+              placeholder={"Paste a snippet, sample output, or a link worth remembering…"} />
+            <p className="hint">Shown alongside the answer in Review and Bank, formatted as code. Not graded — just there for reference.</p>
+            <button type="button" className="expand-btn" onClick={() => setCodeEditorOpen(true)}>⤢ Open full editor</button>
           </div>
         </>
+      )}
+
+      {answerEditorOpen && (
+        <AnswerEditorModal
+          title="What a strong answer covers"
+          value={answer}
+          onSave={setAnswer}
+          onClose={() => setAnswerEditorOpen(false)}
+        />
+      )}
+
+      {codeEditorOpen && (
+        <AnswerEditorModal
+          title="Code example / reference"
+          value={codeExample}
+          onSave={setCodeExample}
+          onClose={() => setCodeEditorOpen(false)}
+          mono
+          placeholder="Paste a snippet, sample output, or a link worth remembering…"
+          hint="Not graded — shown as reference alongside the answer."
+          saveLabel="Save example"
+        />
       )}
 
       <div className="card">
@@ -1834,7 +2027,7 @@ const GRADES = [
 ];
 
 function ReviewView({ ctx, goAdd }) {
-  const { questions, concepts, settings, mlReady, putQ } = ctx;
+  const { questions, concepts, languages, settings, mlReady, putQ, putSettings } = ctx;
   const [phase, setPhase] = useState("ask");
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(false);
@@ -1842,7 +2035,9 @@ function ReviewView({ ctx, goAdd }) {
   const [results, setResults] = useState(null);
   const [scoring, setScoring] = useState(false);
   const [manual, setManual] = useState("");
+  const [flipAnim, setFlipAnim] = useState(false);
   const dict = useDictation();
+  const mode = settings.reviewMode === "flashcard" ? "flashcard" : "spoken";
 
   const queue = useMemo(() => questions
     .filter((q) => !q.variantOf && isDue(q) && !done.includes(q.id))
@@ -1851,10 +2046,18 @@ function ReviewView({ ctx, goAdd }) {
   const card = queue[0];
 
   useEffect(() => { if (!running) return; const t = setInterval(() => setElapsed((e) => e + 1), 1000); return () => clearInterval(t); }, [running]);
-  useEffect(() => { setPhase("ask"); setElapsed(0); setRunning(false); setResults(null); setManual(""); }, [card && card.id]);
+  useEffect(() => {
+    setPhase(mode === "flashcard" ? "front" : "ask");
+    setElapsed(0); setRunning(false); setResults(null); setManual(""); setFlipAnim(false);
+  }, [card && card.id, mode]);
 
   const target = settings.talkTarget || 90;
   const beats = useMemo(() => (card ? splitBeats(card.answer) : []), [card]);
+
+  function flipToBack() {
+    setFlipAnim(true);
+    setTimeout(() => { setPhase("back"); setFlipAnim(false); }, 160);
+  }
 
   async function finishTalking() {
     setRunning(false);
@@ -1880,15 +2083,17 @@ function ReviewView({ ctx, goAdd }) {
     setDone((d) => [...d, card.id]);
   }
 
-  /* Anki-style keyboard flow: Space advances (start answering, then reveal),
-     1–4 grade once the answer is up. Ignored while typing in a text field. */
+  /* Anki-style keyboard flow: Space advances (start answering / flip, then
+     reveal), 1–4 grade once the answer is up. Ignored while typing in a field. */
   useEffect(() => {
     function onKey(e) {
       const tag = (e.target && e.target.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
       if (e.code === "Space") {
-        if (phase === "ask") {
+        if (mode === "flashcard") {
+          if (phase === "front") { e.preventDefault(); flipToBack(); }
+        } else if (phase === "ask") {
           e.preventDefault();
           if (dict.supported) dict.start();
           setRunning(true);
@@ -1897,14 +2102,17 @@ function ReviewView({ ctx, goAdd }) {
           e.preventDefault();
           finishTalking();
         }
-      } else if (phase === "check" && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) {
+      } else if (
+        (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4") &&
+        ((mode === "flashcard" && phase === "back") || (mode === "spoken" && phase === "check"))
+      ) {
         e.preventDefault();
         grade(Number(e.key));
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, dict, manual, card, beats, mlReady, results, elapsed, target, settings.retention]);
+  }, [phase, mode, dict, manual, card, beats, mlReady, results, elapsed, target, settings.retention]);
 
   if (!questions.length) {
     return <div className="card"><div className="empty">
@@ -1913,16 +2121,28 @@ function ReviewView({ ctx, goAdd }) {
       <button className="btn" onClick={goAdd}>Add a question</button>
     </div></div>;
   }
+
+  const modeSwitch = (
+    <div className="mode-toggle" role="tablist">
+      <button className={mode === "spoken" ? "on" : ""} onClick={() => putSettings({ reviewMode: "spoken" })}>Spoken practice</button>
+      <button className={mode === "flashcard" ? "on" : ""} onClick={() => putSettings({ reviewMode: "flashcard" })}>Flashcards</button>
+    </div>
+  );
+
   if (!card) {
     const nxt = ahead[0];
-    return <div className="card"><div className="empty">
-      <h3>Queue clear.</h3>
-      <p>{done.length ? "You answered " + done.length + " out loud. " : ""}{nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}</p>
-      <button className="btn line" onClick={goAdd}>Add a question</button>
-    </div></div>;
+    return <>
+      {modeSwitch}
+      <div className="card"><div className="empty">
+        <h3>Queue clear.</h3>
+        <p>{done.length ? "You answered " + done.length + " out loud. " : ""}{nxt ? "Next one comes back " + fmtDue(nxt).replace("due ", "") + "." : "Add more and they'll queue for today."}</p>
+        <button className="btn line" onClick={goAdd}>Add a question</button>
+      </div></div>
+    </>;
   }
 
   const concept = concepts.find((c) => c.id === card.conceptId);
+  const language = languages.find((l) => l.id === card.languageId);
   const variants = questions.filter((q) => q.variantOf === card.id);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
@@ -1930,18 +2150,65 @@ function ReviewView({ ctx, goAdd }) {
 
   return (
     <>
+      {modeSwitch}
+
       <div className="stat-row">
         <div className="stat"><b>{queue.length}</b><small>in queue</small></div>
         <div className="stat"><b>{done.length}</b><small>done today</small></div>
         <div className="stat"><b>{strengthOf(card)}</b><small>strength</small></div>
       </div>
 
-      <div className="card">
-        <span className="eyebrow">{concept ? concept.name : "Unfiled"} · {angleName(card.angle)} · {card.difficulty}</span>
+      <div className={"card rev-flip" + (flipAnim ? " flip" : "")}>
+        <span className="eyebrow">{concept ? concept.name : "Unfiled"}{language ? " · " + language.name : ""} · {angleName(card.angle)} · {card.difficulty}</span>
         <div className="rev-q">{card.text}</div>
         {variants.length > 0 && <p className="hint" style={{ marginTop: 10 }}>Also asked as: {variants.map((v) => v.text).join(" / ")}</p>}
 
-        {phase === "ask" && (
+        {mode === "flashcard" && phase === "front" && (
+          <>
+            <div className="alert info">
+              <b>Recall it before you flip.</b>
+              Say the answer to yourself, then check — flashcards are for fast, repeated recall, not spoken rehearsal.
+            </div>
+            <button className="btn" style={{ marginTop: 12 }} onClick={flipToBack}>Show answer</button>
+            <p className="hint">Press <b>Space</b> to flip.</p>
+          </>
+        )}
+
+        {mode === "flashcard" && phase === "back" && (
+          <div style={{ marginTop: 16 }}>
+            {card.answer ? (
+              beats.length > 1 ? (
+                <>
+                  <span className="eyebrow">Answer</span>
+                  {beats.map((b, i) => (
+                    <div className="beat" key={i}>
+                      <div className="beat-mark" style={{ color: "var(--soft)" }}>·</div>
+                      <div style={{ flex: 1 }}><div className="beat-txt">{b}</div></div>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <div className="item-ans" style={{ fontSize: 16, whiteSpace: "pre-line" }}>{card.answer}</div>
+              )
+            ) : (
+              <p className="hint">No answer notes saved for this one. Add them from the Bank tab while it's fresh.</p>
+            )}
+            {card.codeExample && <pre className="code-block">{card.codeExample}</pre>}
+
+            <span className="eyebrow" style={{ marginTop: 18 }}>How did that go?</span>
+            <div className="grade">
+              {GRADES.map(({ g, name }) => (
+                <button key={g} onClick={() => grade(g)}>
+                  <b>{g} · {name}</b>
+                  <small>{previewDays(card, g, settings.retention)}</small>
+                </button>
+              ))}
+            </div>
+            <p className="hint">Intervals come from FSRS, fitted to this card's own stability and difficulty. Press <b>1–4</b> to grade.</p>
+          </div>
+        )}
+
+        {mode === "spoken" && phase === "ask" && (
           <>
             <div className="alert info">
               <b>Say it out loud, on the clock.</b>
@@ -1963,7 +2230,7 @@ function ReviewView({ ctx, goAdd }) {
           </>
         )}
 
-        {phase === "talk" && (
+        {mode === "spoken" && phase === "talk" && (
           <div style={{ marginTop: 16 }}>
             <div className="mic">
               <div className={"mic-orb" + (dict.listening ? " live" : "")}>{dict.listening ? "●" : "○"}</div>
@@ -1986,7 +2253,7 @@ function ReviewView({ ctx, goAdd }) {
           </div>
         )}
 
-        {phase === "check" && (
+        {mode === "spoken" && phase === "check" && (
           <div style={{ marginTop: 16 }}>
             <span className="eyebrow">You spoke for {mm}:{ss} · target {target}s</span>
 
@@ -2022,6 +2289,7 @@ function ReviewView({ ctx, goAdd }) {
             {!results && !scoring && (card.answer
               ? <div className="item-ans" style={{ fontSize: 16, whiteSpace: "pre-line" }}>{card.answer}</div>
               : <p className="hint">No answer notes saved for this one. Add them from the Bank tab while it's fresh — then review can grade you properly.</p>)}
+            {card.codeExample && <pre className="code-block">{card.codeExample}</pre>}
 
             <span className="eyebrow" style={{ marginTop: 18 }}>
               How did that go?{sug && <span style={{ textTransform: "none", letterSpacing: 0 }}> — coverage suggests {GRADES[sug.grade - 1].name.toLowerCase()}</span>}
@@ -2138,12 +2406,14 @@ function CoverageView({ ctx, onGap }) {
 
 /* =============================== BANK ================================== */
 function BankView({ ctx, goAdd, onEdit, seed }) {
-  const { questions, concepts, vecs, mlReady, putQ, dropQ, putVec } = ctx;
+  const { questions, concepts, languages, vecs, mlReady, putQ, dropQ, putVec } = ctx;
   const [q, setQ] = useState("");
   const [qVec, setQVec] = useState(null);
   const [conceptFilter, setConceptFilter] = useState("all");
+  const [languageFilter, setLanguageFilter] = useState("all");
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState("");
+  const [notesEditorItem, setNotesEditorItem] = useState(null);
 
   useEffect(() => {
     let dead = false;
@@ -2155,6 +2425,7 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
   const list = useMemo(() => {
     let out = questions.filter((x) => !x.variantOf);
     if (conceptFilter !== "all") out = out.filter((x) => (conceptFilter === "none" ? !x.conceptId : x.conceptId === conceptFilter));
+    if (languageFilter !== "all") out = out.filter((x) => (languageFilter === "none" ? !x.languageId : x.languageId === languageFilter));
     if (q.trim()) {
       out = out.map((x) => {
         const lex = lexScore(q, x.text);
@@ -2165,7 +2436,7 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
         .sort((a, b) => b.s - a.s).map((r) => r.x);
     } else out = [...out].sort((a, b) => b.created - a.created);
     return out;
-  }, [questions, q, conceptFilter, qVec, vecs]);
+  }, [questions, q, conceptFilter, languageFilter, qVec, vecs]);
 
   async function saveAnswer(item) {
     await putQ({ ...item, answer: draft.trim() });
@@ -2193,6 +2464,15 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
             <option value="none">Unfiled</option>
           </select>
         </div>
+        {languages.length > 0 && (
+          <div className="field">
+            <select className="t" value={languageFilter} onChange={(e) => setLanguageFilter(e.target.value)}>
+              <option value="all">All languages</option>
+              {languages.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              <option value="none">No language</option>
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -2200,22 +2480,25 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
         {list.length === 0 && <p className="note">Nothing matches. Clear the search, or add it — the gauge will confirm it's new.</p>}
         {list.map((item) => {
           const c = concepts.find((x) => x.id === item.conceptId);
+          const l = languages.find((x) => x.id === item.languageId);
           const variants = questions.filter((v) => v.variantOf === item.id);
           return (
             <div className="item" key={item.id}>
               <div className="item-q">{item.text}</div>
               <div className="item-meta">
                 <span>{c ? c.name : "unfiled"}</span><span className="dot" />
-                <span>{item.language || "no language"}</span><span className="dot" />
+                {l && <><span>{l.name}</span><span className="dot" /></>}
                 <span>{angleName(item.angle)}</span><span className="dot" />
                 <span>{strengthOf(item)}{item.stability ? " · " + Math.round(item.stability) + "d" : ""}</span><span className="dot" />
                 <span>{fmtDue(item)}</span>
                 {item.lapses > 0 && <><span className="dot" /><span style={{ color: "var(--collide)" }}>{item.lapses} blank{item.lapses === 1 ? "" : "s"}</span></>}
               </div>
               {item.answer && editing !== item.id && <div className="item-ans" style={{ whiteSpace: "pre-line" }}>{item.answer}</div>}
+              {item.codeExample && editing !== item.id && <pre className="code-block">{item.codeExample}</pre>}
               {editing === item.id ? (
                 <>
                   <textarea className="q sm" style={{ marginTop: 10 }} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="One beat per line…" />
+                  <button type="button" className="expand-btn" onClick={() => setNotesEditorItem(item)}>⤢ Open full editor</button>
                   <div className="row" style={{ marginTop: 8 }}>
                     <button className="btn tiny" onClick={() => saveAnswer(item)}>Save notes</button>
                     <button className="btn tiny line" onClick={() => setEditing(null)}>Cancel</button>
@@ -2242,13 +2525,22 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
           );
         })}
       </div>
+
+      {notesEditorItem && (
+        <AnswerEditorModal
+          title="What a strong answer covers"
+          value={notesEditorItem.answer || ""}
+          onSave={async (v) => { await putQ({ ...notesEditorItem, answer: v.trim() }); setEditing(null); }}
+          onClose={() => setNotesEditorItem(null)}
+        />
+      )}
     </>
   );
 }
 
 /* =============================== DATA ================================== */
 function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
-  const { questions, concepts, settings, vecs, putSettings, refreshStore } = ctx;
+  const { questions, concepts, languages, settings, vecs, putSettings, refreshStore } = ctx;
   const [msg, setMsg] = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [usage, setUsage] = useState(null);
@@ -2266,7 +2558,7 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
 
   async function doExport() {
     const reviews = await Repo.allReviews().catch(() => []);
-    const text = buildExport({ questions, concepts, settings }, reviews);
+    const text = buildExport({ questions, concepts, languages, settings }, reviews);
     const r = await saveBlob(text, "the-bank-" + stamp() + ".json", "application/json");
     if (r.ok) setMsg({ k: "ok", t: "Backup written", b: r.how === "picker" ? "Saved as " + r.name + " where you chose." : "Downloaded as " + r.name + ". Vectors are left out — they rebuild in seconds." });
     else setMsg({ k: "warn", t: "Cancelled", b: "Nothing was written." });
@@ -2277,11 +2569,12 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
       const text = await file.text();
       const incoming = JSON.parse(text);
       if (incoming.format !== "thebank") throw new Error("not a Bank backup");
-      const { data, report } = mergeImport({ questions, concepts }, incoming);
+      const { data, report } = mergeImport({ questions, concepts, languages }, incoming);
       await Repo.saveQuestions(data.questions);
       await Repo.saveConcepts(data.concepts);
-      setAll(data.questions, data.concepts);
-      setMsg({ k: "ok", t: "Merged", b: report.added + " added, " + report.updated + " updated, " + report.skipped + " skipped as already here, " + report.newConcepts + " new concepts. Nothing was deleted." });
+      await Repo.saveLanguages(data.languages);
+      setAll(data.questions, data.concepts, data.languages);
+      setMsg({ k: "ok", t: "Merged", b: report.added + " added, " + report.updated + " updated, " + report.skipped + " skipped as already here, " + report.newConcepts + " new concepts, " + report.newLanguages + " new languages. Nothing was deleted." });
     } catch (e) {
       setMsg({ k: "warn", t: "Couldn't read that file", b: (e && e.message) || "Pick a .json backup exported from The Bank." });
     }
@@ -2389,7 +2682,7 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
                 try {
                   await Storage.importFile(await f.arrayBuffer());
                   const d = await Repo.load();
-                  setAll(d.questions, d.concepts);
+                  setAll(d.questions, d.concepts, d.languages);
                   refreshStore();
                   setMsg({ k: "ok", t: "Database replaced", b: "Loaded " + d.questions.length + " questions from " + f.name + ". This overwrote the previous file." });
                 } catch (err) {
@@ -2450,7 +2743,7 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
           <>
             <p className="note" style={{ marginTop: 0 }}>This truncates every table in bank.sqlite3 and also clears the old IndexedDB and localStorage copies, so nothing comes back on refresh. Export first if you want them back.</p>
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], []); refreshStore(); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "Every table truncated, old IndexedDB and localStorage copies cleared, file vacuumed. It will stay empty." }); }}>Delete everything</button>
+              <button className="btn danger" onClick={async () => { await Repo.wipe(); setAll([], [], []); refreshStore(); setConfirmReset(false); setMsg({ k: "ok", t: "Cleared", b: "Every table truncated, old IndexedDB and localStorage copies cleared, file vacuumed. It will stay empty." }); }}>Delete everything</button>
               <button className="btn line" onClick={() => setConfirmReset(false)}>Keep it</button>
             </div>
           </>
