@@ -1082,10 +1082,12 @@ function lexCoverage(beat, transcript) {
    here and gets grown by upgradeSchema below. */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS concepts (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]'
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]',
+  updated_at INTEGER, deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS languages (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]'
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, aliases TEXT DEFAULT '[]',
+  updated_at INTEGER, deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY,
@@ -1099,7 +1101,8 @@ CREATE TABLE IF NOT EXISTS questions (
   due INTEGER, created INTEGER, last INTEGER,
   reps INTEGER DEFAULT 0, lapses INTEGER DEFAULT 0,
   stability REAL, difficulty_f REAL, interval REAL,
-  variant_of TEXT
+  variant_of TEXT,
+  updated_at INTEGER, deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS vectors (
   id TEXT PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
@@ -1121,9 +1124,11 @@ CREATE INDEX IF NOT EXISTS idx_q_concept ON questions(concept_id);
 CREATE INDEX IF NOT EXISTS idx_q_language ON questions(language_id);
 CREATE INDEX IF NOT EXISTS idx_q_variant ON questions(variant_of);
 CREATE INDEX IF NOT EXISTS idx_r_qid ON reviews(qid);
+CREATE INDEX IF NOT EXISTS idx_q_deleted ON questions(deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_r_unique ON reviews(qid, at);
 `;
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DB_FILE = "bank.sqlite3";
 const LEGACY_KEY = "qbank:v1";
 const IDB_NAME = "qbank";
@@ -1131,10 +1136,27 @@ const IDB_NAME = "qbank";
 /* Step 2 — grow an older table to the current shape. Idempotent: reads
    PRAGMA table_info first, so a second boot adds nothing. */
 function upgradeSchema(db) {
-  const info = db.exec("PRAGMA table_info(questions)");
-  const names = info.length ? info[0].values.map((r) => r[1]) : [];
-  if (names.length && !names.includes("language_id")) db.run("ALTER TABLE questions ADD COLUMN language_id TEXT");
-  if (names.length && !names.includes("code_example")) db.run("ALTER TABLE questions ADD COLUMN code_example TEXT");
+  const cols = (t) => {
+    const info = db.exec("PRAGMA table_info(" + t + ")");
+    return info.length ? info[0].values.map((r) => r[1]) : [];
+  };
+  const add = (t, col, type) => {
+    const have = cols(t);
+    if (have.length && !have.includes(col)) db.run("ALTER TABLE " + t + " ADD COLUMN " + col + " " + type);
+  };
+  add("questions", "language_id", "TEXT");
+  add("questions", "code_example", "TEXT");
+  /* v3: sync needs to know when a row changed and whether it was deleted.
+     A hard delete is invisible to the other device, which would push the
+     row straight back on the next sync. */
+  ["questions", "concepts", "languages"].forEach((t) => {
+    add(t, "updated_at", "INTEGER");
+    add(t, "deleted_at", "INTEGER");
+  });
+  /* backfill so pre-v3 rows are not all treated as older than everything */
+  db.run("UPDATE questions SET updated_at = coalesce(updated_at, last, created, 0) WHERE updated_at IS NULL");
+  db.run("UPDATE concepts SET updated_at = coalesce(updated_at, 0) WHERE updated_at IS NULL");
+  db.run("UPDATE languages SET updated_at = coalesce(updated_at, 0) WHERE updated_at IS NULL");
 }
 
 /** Tables, then columns, then indexes. Every database opens through this. */
@@ -1154,6 +1176,8 @@ const rowToQ = (r) => ({
   reps: r.reps || 0, lapses: r.lapses || 0,
   stability: r.stability, difficultyF: r.difficulty_f, interval: r.interval,
   variantOf: r.variant_of || null,
+  updated: r.updated_at || r.last || r.created || 0,
+  deleted: r.deleted_at || null,
 });
 const qToRow = (q) => [
   q.id, q.text, q.answer || "", q.codeExample || "", q.conceptId || null, q.languageId || null, q.angle || "def", q.difficulty || "medium",
@@ -1163,9 +1187,11 @@ const qToRow = (q) => [
   q.difficultyF == null ? null : q.difficultyF,
   q.interval == null ? null : q.interval,
   q.variantOf || null,
+  q.updated || now(),
+  q.deleted || null,
 ];
-const Q_COLS = "id,text,answer,code_example,concept_id,language_id,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of";
-const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+const Q_COLS = "id,text,answer,code_example,concept_id,language_id,angle,difficulty,due,created,last,reps,lapses,stability,difficulty_f,interval,variant_of,updated_at,deleted_at";
+const Q_MARKS = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 /* ====================== fallback backend: IndexedDB ==================== */
 let _idb = null;
@@ -1354,14 +1380,14 @@ const MIG = {
 const Repo = {
   async load() {
     if (Storage.backend === "sqlite") {
-      const questions = Storage.all("SELECT " + Q_COLS + " FROM questions").map(rowToQ);
+      const questions = Storage.all("SELECT " + Q_COLS + " FROM questions WHERE deleted_at IS NULL").map(rowToQ);
       const parseNamed = (r) => {
         let aliases = [];
         try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
-        return { id: r.id, name: r.name, aliases };
+        return { id: r.id, name: r.name, aliases, updated: r.updated_at || 0, deleted: r.deleted_at || null };
       };
-      const concepts = Storage.all("SELECT id,name,aliases FROM concepts").map(parseNamed);
-      const languages = Storage.all("SELECT id,name,aliases FROM languages").map(parseNamed);
+      const concepts = Storage.all("SELECT id,name,aliases,updated_at,deleted_at FROM concepts WHERE deleted_at IS NULL").map(parseNamed);
+      const languages = Storage.all("SELECT id,name,aliases,updated_at,deleted_at FROM languages WHERE deleted_at IS NULL").map(parseNamed);
       const m = Storage.all("SELECT v FROM meta WHERE k='settings'");
       let settings = {};
       if (m.length) { try { settings = JSON.parse(m[0].v); } catch (e) {} }
@@ -1372,17 +1398,20 @@ const Repo = {
       IDB.all("languages").catch(() => []), IDB.all("meta"),
     ]);
     const s = meta.find((x) => x.k === "settings");
-    return { questions, concepts, languages, settings: (s && s.v) || {} };
+    const live = (a) => a.filter((x) => !x.deleted);
+    return { questions: live(questions), concepts: live(concepts), languages: live(languages), settings: (s && s.v) || {} };
   },
 
-  async saveQuestion(q) {
+  async saveQuestion(q, keepStamp) {
+    const row = keepStamp ? q : { ...q, updated: now() };
     if (Storage.backend === "sqlite") {
-      Storage.run("INSERT OR REPLACE INTO questions(" + Q_COLS + ") VALUES " + Q_MARKS, qToRow(q));
+      Storage.run("INSERT OR REPLACE INTO questions(" + Q_COLS + ") VALUES " + Q_MARKS, qToRow(row));
       return;
     }
-    return IDB.put("questions", q);
+    return IDB.put("questions", row);
   },
-  async saveQuestions(qs) {
+  async saveQuestions(qs, keepStamp) {
+    if (!keepStamp) qs = qs.map((q) => ({ ...q, updated: q.updated || now() }));
     if (Storage.backend === "sqlite") {
       Storage.db.run("BEGIN");
       try {
@@ -1396,40 +1425,52 @@ const Repo = {
     }
     return IDB.putMany("questions", qs);
   },
+  /* Soft delete. The row stays as a tombstone so the other device learns
+     about the deletion instead of pushing its copy back. Purged after 90
+     days, by which point every device has long since seen it. */
   async removeQuestion(id) {
+    const t = now();
     if (Storage.backend === "sqlite") {
-      Storage.run("DELETE FROM questions WHERE id=? OR variant_of=?", [id, id]);
-      Storage.run("DELETE FROM vectors WHERE id=?", [id]);
+      Storage.run("UPDATE questions SET deleted_at=?, updated_at=? WHERE id=? OR variant_of=?", [t, t, id, id]);
+      Storage.run("DELETE FROM vectors WHERE id=? OR id IN (SELECT id FROM questions WHERE variant_of=?)", [id, id]);
       return;
     }
-    await IDB.del("questions", id);
+    const all = await IDB.all("questions");
+    const hit = all.filter((q) => q.id === id || q.variantOf === id);
+    await IDB.putMany("questions", hit.map((q) => ({ ...q, deleted: t, updated: t })));
     return IDB.del("vectors", id);
   },
-  async saveConcept(c) {
+  async saveConcept(c, keepStamp) {
+    const row = keepStamp ? c : { ...c, updated: now() };
     if (Storage.backend === "sqlite") {
-      Storage.run("INSERT OR REPLACE INTO concepts(id,name,aliases) VALUES (?,?,?)",
-        [c.id, c.name, JSON.stringify(c.aliases || [])]);
+      Storage.run("INSERT OR REPLACE INTO concepts(id,name,aliases,updated_at,deleted_at) VALUES (?,?,?,?,?)",
+        [row.id, row.name, JSON.stringify(row.aliases || []), row.updated || now(), row.deleted || null]);
       return;
     }
-    return IDB.put("concepts", c);
+    return IDB.put("concepts", row);
   },
-  async saveConcepts(cs) { for (const c of cs) await this.saveConcept(c); },
+  async saveConcepts(cs, keepStamp) { for (const c of cs) await this.saveConcept(c, keepStamp); },
   async removeConcept(id) {
-    if (Storage.backend === "sqlite") { Storage.run("DELETE FROM concepts WHERE id=?", [id]); return; }
-    return IDB.del("concepts", id);
+    const t = now();
+    if (Storage.backend === "sqlite") { Storage.run("UPDATE concepts SET deleted_at=?, updated_at=? WHERE id=?", [t, t, id]); return; }
+    const c = await IDB.all("concepts").then((a) => a.find((x) => x.id === id));
+    if (c) return IDB.put("concepts", { ...c, deleted: t, updated: t });
   },
-  async saveLanguage(l) {
+  async saveLanguage(l, keepStamp) {
+    const row = keepStamp ? l : { ...l, updated: now() };
     if (Storage.backend === "sqlite") {
-      Storage.run("INSERT OR REPLACE INTO languages(id,name,aliases) VALUES (?,?,?)",
-        [l.id, l.name, JSON.stringify(l.aliases || [])]);
+      Storage.run("INSERT OR REPLACE INTO languages(id,name,aliases,updated_at,deleted_at) VALUES (?,?,?,?,?)",
+        [row.id, row.name, JSON.stringify(row.aliases || []), row.updated || now(), row.deleted || null]);
       return;
     }
-    return IDB.put("languages", l);
+    return IDB.put("languages", row);
   },
-  async saveLanguages(ls) { for (const l of ls) await this.saveLanguage(l); },
+  async saveLanguages(ls, keepStamp) { for (const l of ls) await this.saveLanguage(l, keepStamp); },
   async removeLanguage(id) {
-    if (Storage.backend === "sqlite") { Storage.run("DELETE FROM languages WHERE id=?", [id]); return; }
-    return IDB.del("languages", id);
+    const t = now();
+    if (Storage.backend === "sqlite") { Storage.run("UPDATE languages SET deleted_at=?, updated_at=? WHERE id=?", [t, t, id]); return; }
+    const l = await IDB.all("languages").then((a) => a.find((x) => x.id === id));
+    if (l) return IDB.put("languages", { ...l, deleted: t, updated: t });
   },
   async saveSettings(v) {
     if (Storage.backend === "sqlite") {
@@ -1485,13 +1526,75 @@ const Repo = {
     return IDB.all("reviews");
   },
 
+  /** Tombstones included — only sync should ever see these. */
+  async loadAll() {
+    if (Storage.backend === "sqlite") {
+      const parseNamed = (r) => {
+        let aliases = [];
+        try { aliases = JSON.parse(r.aliases || "[]"); } catch (e) {}
+        return { id: r.id, name: r.name, aliases, updated: r.updated_at || 0, deleted: r.deleted_at || null };
+      };
+      return {
+        questions: Storage.all("SELECT " + Q_COLS + " FROM questions").map(rowToQ),
+        concepts: Storage.all("SELECT id,name,aliases,updated_at,deleted_at FROM concepts").map(parseNamed),
+        languages: Storage.all("SELECT id,name,aliases,updated_at,deleted_at FROM languages").map(parseNamed),
+        reviews: await this.allReviews(),
+      };
+    }
+    return {
+      questions: await IDB.all("questions"),
+      concepts: await IDB.all("concepts"),
+      languages: await IDB.all("languages").catch(() => []),
+      reviews: await IDB.all("reviews"),
+    };
+  },
+
+  /** Reviews are append-only; a (qid, at) pair identifies one uniquely. */
+  async saveReviews(rows) {
+    if (!rows.length) return 0;
+    if (Storage.backend === "sqlite") {
+      let n = 0;
+      Storage.db.run("BEGIN");
+      try {
+        const st = Storage.db.prepare(
+          "INSERT OR IGNORE INTO reviews(qid,at,grade,elapsed,stability,difficulty,interval,coverage,transcript_len) VALUES (?,?,?,?,?,?,?,?,?)");
+        rows.forEach((r) => {
+          st.run([r.qid, r.at, r.grade, r.elapsed == null ? null : r.elapsed,
+                  r.stability == null ? null : r.stability, r.difficulty == null ? null : r.difficulty,
+                  r.interval == null ? null : r.interval,
+                  r.coverage == null ? null : r.coverage,
+                  r.transcript_len || r.transcriptLen || 0]);
+          n++;
+        });
+        st.free();
+        Storage.db.run("COMMIT");
+      } catch (e) { Storage.db.run("ROLLBACK"); throw e; }
+      Storage.markDirty();
+      return n;
+    }
+    await IDB.putMany("reviews", rows);
+    return rows.length;
+  },
+
+  /** Tombstones have done their job once every device has synced. */
+  async purgeTombstones(olderThanDays) {
+    if (Storage.backend !== "sqlite") return 0;
+    const cut = now() - (olderThanDays || 90) * DAY;
+    const before = Storage.all("SELECT count(*) c FROM questions WHERE deleted_at IS NOT NULL AND deleted_at < " + cut)[0].c;
+    if (!before) return 0;
+    ["questions", "concepts", "languages"].forEach((t) =>
+      Storage.db.run("DELETE FROM " + t + " WHERE deleted_at IS NOT NULL AND deleted_at < " + cut));
+    Storage.markDirty();
+    return before;
+  },
+
   /** Aggregates the old code did in JS. Free once the data is in SQL. */
   async stats() {
     if (Storage.backend !== "sqlite") return null;
     const g = (sql) => { const r = Storage.all(sql); return r.length ? r[0] : {}; };
     return {
       totals: g("SELECT count(*) questions, count(DISTINCT concept_id) concepts, sum(variant_of IS NOT NULL) variants FROM questions"),
-      due: g("SELECT count(*) n FROM questions WHERE due<=" + now() + " AND variant_of IS NULL").n,
+      due: g("SELECT count(*) n FROM questions WHERE due<=" + now() + " AND variant_of IS NULL AND deleted_at IS NULL").n,
       reviewed: g("SELECT count(*) n, avg(elapsed) avg_secs, avg(coverage) avg_cov FROM reviews"),
       byAngle: Storage.all("SELECT angle, count(*) n, avg(stability) avg_stab FROM questions WHERE variant_of IS NULL GROUP BY angle"),
       weakest: Storage.all(
@@ -1682,6 +1785,125 @@ const ML = {
   async embedMany(texts) { const o = []; for (const t of texts) o.push(await this.embed(t)); return o; },
 };
 
+
+/* ======================================================================
+   SYNC — a private GitHub Gist as the whole backend.
+
+   No server, no account system, no cost: the Gist is a file you own and
+   can read or revoke at any time. Merge is last-write-wins per record,
+   using an updated_at stamp that every write refreshes. Deletions travel
+   as tombstones, so removing a question on one device removes it on the
+   other instead of being resurrected by the next push.
+
+   The token is never included in the payload — settings stay per device.
+   ====================================================================== */
+const GIST_FILE = "the-bank.json";
+const SYNC_FORMAT = "thebank-sync";
+
+/* newest wins; a tombstone counts as a write like any other */
+const stampOf = (r) => Math.max(r.updated || 0, r.deleted || 0, r.last || 0, r.created || 0);
+
+function mergeRecords(mine, theirs) {
+  const out = new Map();
+  let added = 0, updated = 0, deletedIn = 0, kept = 0;
+  mine.forEach((r) => out.set(r.id, r));
+  theirs.forEach((r) => {
+    const local = out.get(r.id);
+    if (!local) { out.set(r.id, r); if (r.deleted) deletedIn++; else added++; return; }
+    if (stampOf(r) > stampOf(local)) {
+      out.set(r.id, r);
+      if (r.deleted && !local.deleted) deletedIn++; else updated++;
+    } else kept++;
+  });
+  return { rows: [...out.values()], added, updated, deletedIn, kept };
+}
+
+/** Reviews are append-only facts: the union, keyed by question and moment. */
+function mergeReviews(mine, theirs) {
+  const key = (r) => r.qid + "|" + r.at;
+  const have = new Set(mine.map(key));
+  const fresh = theirs.filter((r) => !have.has(key(r)));
+  return { rows: mine.concat(fresh), added: fresh.length };
+}
+
+function mergeSync(local, remote) {
+  const q = mergeRecords(local.questions, remote.questions || []);
+  const c = mergeRecords(local.concepts, remote.concepts || []);
+  const l = mergeRecords(local.languages, remote.languages || []);
+  const r = mergeReviews(local.reviews, remote.reviews || []);
+  return {
+    merged: { questions: q.rows, concepts: c.rows, languages: l.rows, reviews: r.rows },
+    report: {
+      questionsIn: q.added, questionsUpdated: q.updated, questionsDeleted: q.deletedIn,
+      conceptsIn: c.added + l.added, reviewsIn: r.added,
+      unchanged: q.kept,
+    },
+  };
+}
+
+function syncPayload(all, device) {
+  return {
+    format: SYNC_FORMAT, version: 3,
+    pushedAt: new Date().toISOString(), device: device || "unknown",
+    questions: all.questions, concepts: all.concepts,
+    languages: all.languages, reviews: all.reviews,
+  };
+}
+
+const GH = "https://api.github.com";
+async function gh(path, token, init) {
+  const res = await fetch(GH + path, {
+    ...(init || {}),
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": "Bearer " + token,
+      "Content-Type": "application/json",
+      ...((init && init.headers) || {}),
+    },
+  });
+  if (res.status === 401) throw new Error("GitHub rejected the token. Check it has the gist scope and has not expired.");
+  if (res.status === 404) throw new Error("That gist no longer exists, or the token cannot see it.");
+  if (res.status === 403) throw new Error("GitHub rate limit or permission refused. Wait a minute and retry.");
+  if (!res.ok) throw new Error("GitHub returned " + res.status + ".");
+  return res.json();
+}
+
+async function gistRead(token, gistId) {
+  const g = await gh("/gists/" + gistId, token);
+  const f = g.files && g.files[GIST_FILE];
+  if (!f) return null;
+  /* the API truncates files over ~1 MB and hands back a raw URL instead */
+  const text = f.truncated ? await fetch(f.raw_url).then((r) => r.text()) : f.content;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed.format !== SYNC_FORMAT) throw new Error("wrong format");
+    return parsed;
+  } catch (e) { throw new Error("The gist contents could not be read as a Bank sync file."); }
+}
+
+async function gistWrite(token, gistId, payload) {
+  const body = JSON.stringify({
+    description: "The Bank — interview question bank sync",
+    files: { [GIST_FILE]: { content: JSON.stringify(payload) } },
+  });
+  if (gistId) { await gh("/gists/" + gistId, token, { method: "PATCH", body }); return gistId; }
+  const made = await gh("/gists", token, { method: "POST", body: JSON.stringify({
+    description: "The Bank — interview question bank sync",
+    public: false,
+    files: { [GIST_FILE]: { content: JSON.stringify(payload) } },
+  }) });
+  return made.id;
+}
+
+const deviceName = () => {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  if (/Android/i.test(ua)) return "Android";
+  if (/iPhone|iPad/i.test(ua)) return "iOS";
+  if (/Mac/i.test(ua)) return "Mac";
+  if (/Windows/i.test(ua)) return "Windows";
+  return "device";
+};
+
 /* ------------------------------- seed ---------------------------------- */
 const STARTER = () => {
   const cs = ["JavaScript", "React", "System design", "SQL", "Behavioural"].map((n) => ({ id: uid(), name: n, aliases: [] }));
@@ -1761,6 +1983,7 @@ function QuestionBank() {
     (async () => {
       try {
         const backend = await Storage.init();
+        await Repo.purgeTombstones(90).catch(() => {});
         const lifted = await Repo.migrateIDB();
         const legacy = await Repo.migrateLegacy();
         const d = await Repo.load();
@@ -1814,6 +2037,35 @@ function QuestionBank() {
   const putSettings = useCallback(async (patch) => {
     setSettings((prev) => { const next = { ...prev, ...patch }; Repo.saveSettings(next).catch(() => {}); return next; });
   }, []);
+  /* Pull, merge, push, then reload from the store — so what is on screen
+     is exactly what was written, not an optimistic guess. */
+  const runSync = useCallback(async () => {
+    const token = (settings.ghToken || "").trim();
+    if (!token) throw new Error("No token saved yet.");
+    let gistId = settings.gistId || null;
+    const all = await Repo.loadAll();
+    let remote = null;
+    if (gistId) remote = await gistRead(token, gistId);
+    const { merged, report } = mergeSync(
+      { questions: all.questions, concepts: all.concepts, languages: all.languages, reviews: all.reviews },
+      remote || {});
+    /* keepStamp: a merge must never restamp rows, or every sync would look
+       like a fresh edit and last-write-wins would stop meaning anything */
+    await Repo.saveConcepts(merged.concepts, true);
+    await Repo.saveLanguages(merged.languages, true);
+    await Repo.saveQuestions(merged.questions, true);
+    await Repo.saveReviews(merged.reviews.filter((r) => !all.reviews.some((x) => x.qid === r.qid && x.at === r.at)));
+    const after = await Repo.loadAll();
+    gistId = await gistWrite(token, gistId, syncPayload(after, deviceName()));
+    if (Storage.backend === "sqlite") await Storage.flush();
+    const d = await Repo.load();
+    setQuestions(d.questions); setConcepts(d.concepts); setLanguages(d.languages || []);
+    setReviews(await Repo.allReviews().catch(() => []));
+    setStore(Storage.info());
+    await putSettings({ gistId, lastSyncAt: now() });
+    return { report, gistId };
+  }, [settings.ghToken, settings.gistId]);
+
   const pushReview = useCallback(async (r) => {
     setReviews((prev) => [...prev, r]);
     try { await Repo.logReview(r); } catch (e) {}
@@ -1862,7 +2114,7 @@ function QuestionBank() {
 
   const ctx = { questions, concepts, languages, settings, vecs, mlReady, putQ, dropQ, putC, putL, putVec,
     putSettings, store, refreshStore: () => setStore(Storage.info()),
-    reviews, pushReview, counts, streak, xp, level, todayCount };
+    reviews, pushReview, counts, streak, xp, level, todayCount, runSync };
 
   return (
     <div className="qb" data-theme={settings.theme || "light"}>
@@ -3484,7 +3736,7 @@ function StatsView({ ctx }) {
 
 /* =============================== DATA ================================== */
 function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
-  const { questions, concepts, languages, settings, vecs, putSettings, refreshStore } = ctx;
+  const { questions, concepts, languages, settings, vecs, putSettings, refreshStore, runSync } = ctx;
   const [msg, setMsg] = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [usage, setUsage] = useState(null);
@@ -3494,6 +3746,8 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
   const [installable, setInstallable] = useState(typeof window !== "undefined" && !!window.__installPrompt);
   const [installed, setInstalled] = useState(
     typeof matchMedia === "function" && matchMedia("(display-mode: standalone)").matches);
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [syncing, setSyncing] = useState(false);
   const fileRef = useRef(null);
   const dbRef = useRef(null);
 
@@ -3513,7 +3767,8 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
 
   async function doExport() {
     const reviews = await Repo.allReviews().catch(() => []);
-    const text = buildExport({ questions, concepts, languages, settings }, reviews);
+    const safe = { ...settings }; delete safe.ghToken; delete safe.gistId;
+    const text = buildExport({ questions, concepts, languages, settings: safe }, reviews);
     const r = await saveBlob(text, "the-bank-" + stamp() + ".json", "application/json");
     if (r.ok) setMsg({ k: "ok", t: "Backup written", b: r.how === "picker" ? "Saved as " + r.name + " where you chose." : "Downloaded as " + r.name + ". Vectors are left out — they rebuild in seconds." });
     else setMsg({ k: "warn", t: "Cancelled", b: "Nothing was written." });
@@ -3542,6 +3797,69 @@ function DataView({ ctx, mlState, backfill, store, enableML, setAll }) {
   return (
     <>
       {msg && <div className={"alert " + (msg.k === "ok" ? "ok" : "warn")} style={{ marginTop: 0, marginBottom: 14 }}><b>{msg.t}</b>{msg.b}</div>}
+
+      <div className="card">
+        <span className="eyebrow">Sync across devices</span>
+        {settings.ghToken ? (
+          <>
+            <div className="kv"><span>Backend</span><b>private GitHub gist</b></div>
+            <div className="kv"><span>Gist</span><b>{settings.gistId ? settings.gistId.slice(0, 12) + "…" : "created on first sync"}</b></div>
+            <div className="kv"><span>Last sync</span><b>{settings.lastSyncAt ? new Date(settings.lastSyncAt).toLocaleString() : "never"}</b></div>
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn" disabled={syncing} onClick={async () => {
+                setSyncing(true);
+                try {
+                  const { report } = await runSync();
+                  const bits = [];
+                  if (report.questionsIn) bits.push(report.questionsIn + " new");
+                  if (report.questionsUpdated) bits.push(report.questionsUpdated + " updated");
+                  if (report.questionsDeleted) bits.push(report.questionsDeleted + " deleted elsewhere");
+                  if (report.reviewsIn) bits.push(report.reviewsIn + " reviews");
+                  setMsg({ k: "ok", t: "Synced",
+                    b: bits.length ? "Pulled in " + bits.join(", ") + ". Your copy is pushed back up." : "Already up to date on both sides." });
+                } catch (e) {
+                  setMsg({ k: "warn", t: "Sync failed", b: (e && e.message) || "Unknown error." });
+                }
+                setSyncing(false);
+              }}>{syncing ? "Syncing…" : "Sync now"}</button>
+              <button className="btn line" disabled={syncing} onClick={() => {
+                putSettings({ ghToken: "", gistId: settings.gistId || "" });
+                setMsg({ k: "ok", t: "Token removed", b: "This device will stop syncing. Your gist and your local data are untouched." });
+              }}>Disconnect</button>
+            </div>
+            <p className="hint">
+              Merge is newest-wins per question, and deletions carry across. Editing the same question on two
+              devices while both are offline means one edit loses — sync after each session and it never comes up.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="note" style={{ marginTop: 0 }}>
+              Add questions on your laptop and pull them onto your phone through a <b>private gist</b> that only
+              you can read. No server, no account, no cost — and you can delete it at any time.
+            </p>
+            <p className="note">
+              Create a token at <b>github.com/settings/tokens</b> → Generate new token (classic) → tick only
+              the <b>gist</b> scope. Nothing else. Paste it below on each device.
+            </p>
+            <div className="field">
+              <input className="t" type="password" autoComplete="off" spellCheck="false"
+                value={tokenDraft} onChange={(e) => setTokenDraft(e.target.value)}
+                placeholder="ghp_… (gist scope only)" />
+            </div>
+            <button className="btn violet" style={{ marginTop: 10 }} disabled={!tokenDraft.trim()}
+              onClick={() => { putSettings({ ghToken: tokenDraft.trim() }); setTokenDraft("");
+                setMsg({ k: "ok", t: "Token saved", b: "Tap Sync now. The first sync creates the gist; on your other device, paste the same token and it will find it." }); }}>
+              Save token
+            </button>
+            <p className="hint">
+              The token is stored in this browser in plain text, the same as any logged-in session — so only do
+              this on devices you control, and keep the scope to gist alone. It is never included in exports or
+              pushed to the gist.
+            </p>
+          </>
+        )}
+      </div>
 
       <div className="card">
         <span className="eyebrow">Install on this device</span>
