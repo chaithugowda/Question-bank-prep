@@ -488,6 +488,28 @@ select.t{width:100%; border:1px solid var(--rule); border-radius:10px; padding:1
   .fc-grade{gap:5px;} .fc-grade button{padding:10px 3px;} .fc-grade b{font-size:11.5px;}
 }
 
+/* ---- structured answers: bullets, up to three levels ---- */
+.ans{font-family:var(--serif); font-size:15px; line-height:1.5;}
+.ans > p{margin:0 0 9px;}
+.ans > p:last-child{margin-bottom:0;}
+.ans ul{list-style:none; margin:0 0 9px; padding:0;}
+.ans ul:last-child{margin-bottom:0;}
+.ans li{position:relative; padding-left:19px; margin:5px 0;}
+.ans li::before{content:"●"; position:absolute; left:4px; top:0; font-size:7px; line-height:1.9;
+  color:var(--indigo);}
+.ans li.l1{padding-left:37px;}
+.ans li.l1::before{content:"○"; left:22px;}
+.ans li.l2{padding-left:55px;}
+.ans li.l2::before{content:"–"; left:38px; font-size:12px; line-height:1.25;}
+.ans.big{font-size:16.5px;}
+.ans.muted li::before{color:var(--soft);}
+
+.ed-tools{display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:7px;}
+.ed-tools .sep{flex:1;}
+.preview{margin-top:14px; padding:13px 15px; background:var(--surface2); border:1px solid var(--rule);
+  border-radius:10px;}
+.preview .eyebrow{margin-bottom:8px;}
+
 /* ===================== STREAK, SESSION, HISTORY ===================== */
 .streak{display:flex; align-items:center; gap:8px; border:1px solid var(--rule); background:var(--card);
   border-radius:99px; padding:5px 12px 5px 9px; flex-shrink:0;}
@@ -1048,12 +1070,105 @@ function resolveConcept(input, concepts) {
 }
 
 /* -------------------------- answer beat parsing ------------------------- */
+/* An answer is a small outline: "- " starts a bullet, two spaces of indent
+   nests it. Anything else is a plain line. Kept deliberately simple — this
+   is a notes field, not a document editor. */
+const BULLET_RE = /^(\s*)([-*\u2022])\s+(.*)$/;
+
+function parseAnswer(text) {
+  if (!text) return [];
+  return text.split("\n").map((raw) => {
+    const m = raw.match(BULLET_RE);
+    if (m) {
+      const indent = m[1].replace(/\t/g, "  ").length;
+      return { type: "bullet", level: Math.min(2, Math.floor(indent / 2)), text: m[3].trim() };
+    }
+    const t = raw.trim();
+    return t ? { type: "text", level: 0, text: t } : null;
+  }).filter(Boolean);
+}
+
+/* A beat is one top-level point. Nested bullets are its detail, so they fold
+   into the parent rather than becoming separate things to be scored — you
+   should not be marked down twice for one idea. */
 function splitBeats(answer) {
   if (!answer) return [];
-  return answer
-    .split(/\n+|(?<=[.;!?])\s+/)
-    .map((s) => s.trim().replace(/^[-*\u2022]\s*/, ""))
-    .filter((s) => s.length >= 12);
+  const blocks = parseAnswer(answer);
+  if (!blocks.some((b) => b.type === "bullet")) {
+    /* no bullets: the original sentence-and-line split, unchanged */
+    return answer
+      .split(/\n+|(?<=[.;!?])\s+/)
+      .map((s) => s.trim().replace(/^[-*\u2022]\s*/, ""))
+      .filter((s) => s.length >= 12);
+  }
+  const out = [];
+  blocks.forEach((b) => {
+    if (b.level > 0 && out.length) out[out.length - 1] += "\n" + b.text;
+    else out.push(b.text);
+  });
+  return out.filter((s) => s.replace(/\n/g, " ").length >= 12);
+}
+
+/* ---- editing helpers: make the textarea behave like a list ---- */
+const putCaret = (el, at) => {
+  if (typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => { try { el.selectionStart = el.selectionEnd = at; } catch (e) {} });
+};
+const lineBounds = (val, pos) => {
+  const start = val.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+  const nl = val.indexOf("\n", pos);
+  return { start, end: nl === -1 ? val.length : nl };
+};
+
+/** Enter continues the list, Enter on an empty bullet ends it, Tab nests. */
+function bulletKeys(e, setValue) {
+  const el = e.target;
+  const val = el.value, pos = el.selectionStart;
+  if (pos !== el.selectionEnd) return;
+
+  if (e.key === "Enter" && !e.shiftKey) {
+    const { start } = lineBounds(val, pos);
+    const m = val.slice(start, pos).match(BULLET_RE);
+    if (!m) return;
+    e.preventDefault();
+    if (!m[3].trim()) {                       /* empty bullet: drop the marker */
+      setValue(val.slice(0, start) + val.slice(pos));
+      putCaret(el, start);
+      return;
+    }
+    const ins = "\n" + m[1] + "- ";
+    setValue(val.slice(0, pos) + ins + val.slice(pos));
+    putCaret(el, pos + ins.length);
+    return;
+  }
+
+  if (e.key === "Tab") {
+    const { start, end } = lineBounds(val, pos);
+    const line = val.slice(start, end);
+    if (!BULLET_RE.test(line)) return;        /* not a list line: let Tab move focus */
+    e.preventDefault();
+    if (e.shiftKey) {
+      if (!/^ {2}/.test(line)) return;
+      setValue(val.slice(0, start) + line.slice(2) + val.slice(end));
+      putCaret(el, Math.max(start, pos - 2));
+    } else {
+      setValue(val.slice(0, start) + "  " + line + val.slice(end));
+      putCaret(el, pos + 2);
+    }
+  }
+}
+
+/** Toolbar button: turn the caret's line into a bullet, or strip it. */
+function toggleBullet(el, setValue) {
+  if (!el) return;
+  const val = el.value, pos = el.selectionStart;
+  const { start, end } = lineBounds(val, pos);
+  const line = val.slice(start, end);
+  const m = line.match(BULLET_RE);
+  const next = m ? m[1] + m[3] : "- " + line;
+  setValue(val.slice(0, start) + next + val.slice(end));
+  putCaret(el, pos + (m ? -2 : 2));
+  el.focus();
 }
 function splitSentences(t) {
   if (!t) return [];
@@ -2204,9 +2319,37 @@ function QuestionBank() {
   );
 }
 
+/* Renders an answer outline: consecutive bullets become one list, plain
+   lines stay paragraphs. Used everywhere an answer is shown. */
+function AnswerBody({ text, className }) {
+  const blocks = useMemo(() => parseAnswer(text), [text]);
+  if (!blocks.length) return null;
+  const out = [];
+  let list = null;
+  blocks.forEach((b, i) => {
+    if (b.type === "bullet") {
+      if (!list) { list = []; out.push({ kind: "ul", items: list, key: "u" + i }); }
+      list.push({ ...b, key: "i" + i });
+    } else {
+      list = null;
+      out.push({ kind: "p", text: b.text, key: "p" + i });
+    }
+  });
+  return (
+    <div className={"ans " + (className || "")}>
+      {out.map((blk) => blk.kind === "ul"
+        ? <ul key={blk.key}>{blk.items.map((it) => (
+            <li key={it.key} className={it.level ? "l" + it.level : ""}>{it.text}</li>
+          ))}</ul>
+        : <p key={blk.key}>{blk.text}</p>)}
+    </div>
+  );
+}
+
 /* ============================ ANSWER EDITOR ============================= */
 function AnswerEditorModal({ title, value, onSave, onClose, mono, placeholder, hint, saveLabel }) {
   const [draft, setDraft] = useState(value || "");
+  const ta = useRef(null);
   const n = splitBeats(draft).length;
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -2216,11 +2359,26 @@ function AnswerEditorModal({ title, value, onSave, onClose, mono, placeholder, h
           <button className="btn tiny line" onClick={onClose}>Close</button>
         </div>
         <textarea
+          ref={ta}
           className={"q xl" + (mono ? " mono" : "")} autoFocus value={draft} spellCheck={!mono}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={placeholder || "One beat per line.\nReview checks your spoken answer against each one."}
+          onKeyDown={mono ? undefined : (e) => bulletKeys(e, setDraft)}
+          placeholder={placeholder || "- One point per bullet\n  - indent for detail\nOr just plain lines."}
         />
-        <p className="hint">{hint || (n + " beat" + (n === 1 ? "" : "s") + " detected. Review scores your spoken answer against each one individually.")}</p>
+        {!mono && (
+          <div className="ed-tools">
+            <button type="button" className="expand-btn" onClick={() => toggleBullet(ta.current, setDraft)}>● Bullet</button>
+            <span className="sep" />
+            <span className="expand-btn" style={{ cursor: "default" }}>Enter continues · Tab indents</span>
+          </div>
+        )}
+        <p className="hint">{hint || (n + " beat" + (n === 1 ? "" : "s") + " detected. Nested bullets fold into the point above, so one idea is scored once.")}</p>
+        {!mono && draft.trim() && (
+          <div className="preview">
+            <span className="eyebrow">How it will look</span>
+            <AnswerBody text={draft} />
+          </div>
+        )}
         <div className="row" style={{ marginTop: 14 }}>
           <button className="btn" onClick={() => { onSave(draft); onClose(); }}>{saveLabel || "Save answer"}</button>
           <button className="btn line" onClick={onClose}>Cancel</button>
@@ -2253,6 +2411,7 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
   const [editingId, setEditingId] = useState(null);
   const [answerEditorOpen, setAnswerEditorOpen] = useState(false);
   const [codeEditorOpen, setCodeEditorOpen] = useState(false);
+  const answerRef = useRef(null);
 
   const conceptOf = (id) => concepts.find((c) => c.id === id);
   const languageOf = (id) => languages.find((l) => l.id === id);
@@ -2695,14 +2854,20 @@ function AddView({ ctx, prefill, clearPrefill, editItem, clearEdit }) {
 
           <div className="card">
             <span className="eyebrow">What a strong answer covers</span>
-            <textarea className="q sm" value={answer} onChange={(e) => setAnswer(e.target.value)}
-              placeholder={"One beat per line.\nReview checks your spoken answer against each one."} />
+            <textarea className="q sm" ref={answerRef} value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => bulletKeys(e, setAnswer)}
+              placeholder={"- One point per bullet\n  - indent for supporting detail\nPlain lines work too."} />
+            <div className="ed-tools">
+              <button type="button" className="expand-btn" onClick={() => toggleBullet(answerRef.current, setAnswer)}>● Bullet</button>
+              <span className="sep" />
+              <button type="button" className="expand-btn" onClick={() => setAnswerEditorOpen(true)}>⤢ Full editor</button>
+            </div>
             <p className="hint">
               {splitBeats(answer).length > 0
-                ? splitBeats(answer).length + " beat" + (splitBeats(answer).length === 1 ? "" : "s") + " detected. Review will tell you which ones you skipped."
-                : "Write one beat per line. Review scores your spoken answer against them individually."}
+                ? splitBeats(answer).length + " beat" + (splitBeats(answer).length === 1 ? "" : "s") + " detected. Indented bullets fold into the point above."
+                : "Enter continues a bullet, Tab indents. Review scores your spoken answer against each top-level point."}
             </p>
-            <button type="button" className="expand-btn" onClick={() => setAnswerEditorOpen(true)}>⤢ Open full editor</button>
           </div>
 
           <div className="card">
@@ -2934,14 +3099,18 @@ function FlashcardOverlay({ ctx, queue, doneCount, onGrade, onClose }) {
                 <div className="fc-face fc-back">
                   <span className="eyebrow">Answer</span>
                   {card.answer ? (
-                    beats.length > 1
-                      ? beats.map((b, i) => (
-                          <div className="fc-beat" key={i}
-                            style={{ animation: "beatIn .34s var(--ease-out) both", animationDelay: (120 + i * 70) + "ms" }}>
-                            <i>{i + 1}</i><p>{b}</p>
-                          </div>
-                        ))
-                      : <p className="fc-plain">{card.answer}</p>
+                    /* a written outline keeps its own shape; loose prose gets
+                       numbered so there is still something to count against */
+                    /\n\s*[-*\u2022]\s/.test("\n" + card.answer)
+                      ? <AnswerBody text={card.answer} className="big" />
+                      : beats.length > 1
+                        ? beats.map((b, i) => (
+                            <div className="fc-beat" key={i}
+                              style={{ animation: "beatIn .34s var(--ease-out) both", animationDelay: (120 + i * 70) + "ms" }}>
+                              <i>{i + 1}</i><p>{b}</p>
+                            </div>
+                          ))
+                        : <p className="fc-plain">{card.answer}</p>
                   ) : (
                     <p className="fc-plain" style={{ color: "var(--soft)" }}>
                       No notes on this one yet. Add them from Bank while it's fresh.
@@ -3308,7 +3477,7 @@ function ReviewView({ ctx, goAdd }) {
                       {r.state === "hit" ? "✓" : r.state === "part" ? "~" : "✗"}
                     </div>
                     <div style={{ flex: 1 }}>
-                      <div className="beat-txt">{r.beat}</div>
+                      <div className="beat-txt" style={{ whiteSpace: "pre-line" }}>{r.beat}</div>
                       <div className="beat-score">{r.state === "hit" ? "covered" : r.state === "part" ? "touched on" : "not mentioned"} · {Math.round(r.score * 100)}%</div>
                     </div>
                   </div>
@@ -3317,7 +3486,7 @@ function ReviewView({ ctx, goAdd }) {
             )}
 
             {!results && !scoring && (card.answer
-              ? <div className="item-ans" style={{ fontSize: 16, whiteSpace: "pre-line" }}>{card.answer}</div>
+              ? <div className="item-ans"><AnswerBody text={card.answer} className="big" /></div>
               : <p className="hint">No answer notes saved for this one. Add them from the Bank tab while it's fresh — then review can grade you properly.</p>)}
             {card.codeExample && <pre className="code-block">{card.codeExample}</pre>}
 
@@ -3450,6 +3619,7 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState("");
   const [notesEditorItem, setNotesEditorItem] = useState(null);
+  const notesRef = useRef(null);
 
   useEffect(() => {
     let dead = false;
@@ -3529,12 +3699,21 @@ function BankView({ ctx, goAdd, onEdit, seed }) {
                 <span>{fmtDue(item)}</span>
                 {item.lapses > 0 && <><span className="dot" /><span style={{ color: "var(--collide)" }}>{item.lapses} blank{item.lapses === 1 ? "" : "s"}</span></>}
               </div>
-              {item.answer && editing !== item.id && <div className="item-ans" style={{ whiteSpace: "pre-line" }}>{item.answer}</div>}
+              {item.answer && editing !== item.id && (
+                <div className="item-ans"><AnswerBody text={item.answer} className="muted" /></div>
+              )}
               {item.codeExample && editing !== item.id && <pre className="code-block">{item.codeExample}</pre>}
               {editing === item.id ? (
                 <>
-                  <textarea className="q sm" style={{ marginTop: 10 }} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="One beat per line…" />
-                  <button type="button" className="expand-btn" onClick={() => setNotesEditorItem(item)}>⤢ Open full editor</button>
+                  <textarea className="q sm" style={{ marginTop: 10 }} value={draft} ref={notesRef}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => bulletKeys(e, setDraft)}
+                    placeholder={"- One point per bullet\n  - indent for detail"} />
+                  <div className="ed-tools">
+                    <button type="button" className="expand-btn" onClick={() => toggleBullet(notesRef.current, setDraft)}>● Bullet</button>
+                    <span className="sep" />
+                    <button type="button" className="expand-btn" onClick={() => setNotesEditorItem(item)}>⤢ Full editor</button>
+                  </div>
                   <div className="row" style={{ marginTop: 8 }}>
                     <button className="btn tiny" onClick={() => saveAnswer(item)}>Save notes</button>
                     <button className="btn tiny line" onClick={() => setEditing(null)}>Cancel</button>
